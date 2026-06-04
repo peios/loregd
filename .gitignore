@@ -1,0 +1,16 @@
+# Local build output from `go build`.
+/loregd
+
+# Local SQLite hive files created during manual testing.
+*.db
+*.db-*
+*.regdb
+*.regdb-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Ad-hoc hive files left by earlier local runs.
+/A
+/internal/hivedb/My
