@@ -1,5 +1,7 @@
+outDir = "out"
+
 [build]
-command = "go build ."
+command = "go build -o \"$PEKIT_OUT/loregd\" ."
 
 [test]
 command = "go test ./..."

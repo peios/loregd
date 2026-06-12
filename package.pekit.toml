@@ -1,0 +1,4 @@
+format = "tar"
+
+[files]
+":loregd" = "usr/bin/loregd"
