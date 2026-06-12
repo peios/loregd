@@ -1,0 +1,8 @@
+[build]
+command = "go build ."
+
+[test]
+command = "go test ./..."
+
+[clean]
+command = "go clean"
