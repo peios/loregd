@@ -14,3 +14,5 @@
 # Ad-hoc hive files left by earlier local runs.
 /A
 /internal/hivedb/My
+
+/out
