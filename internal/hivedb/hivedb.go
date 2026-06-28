@@ -11,6 +11,8 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -50,6 +52,15 @@ type HiveDB struct {
 // performs first-boot root creation if needed, runs crash recovery,
 // and creates the read connection pool.
 func Open(name, path string) (*HiveDB, error) {
+	// loregd owns its hive storage: create the database's parent directory if it
+	// is absent (e.g. /var/lib/loregd on first boot) so SQLite can create the
+	// file. The DB file itself is created by the driver.
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create hive directory for %s: %w", name, err)
+		}
+	}
+
 	// Write connection: used for all mutations and startup.
 	writeDB, err := openConn(path, name)
 	if err != nil {
