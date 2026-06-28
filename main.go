@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,6 +25,13 @@ import (
 )
 
 func main() {
+	// Diagnostic: route logs to /dev/console so early-boot failures are visible
+	// on the serial console. peinit captures registryd stdout/stderr to a pipe
+	// it doesn't surface on a Phase-1 readiness failure, so without this loregd
+	// fails silently and looks like a bare notify timeout. Best-effort.
+	if f, err := os.OpenFile("/dev/console", os.O_WRONLY, 0); err == nil {
+		log.SetOutput(f)
+	}
 	if err := run(os.Args[1:]); err != nil {
 		log.Fatal(err)
 	}
@@ -83,6 +91,12 @@ func run(args []string) error {
 	}
 	log.Printf("loregd: registered %d hive(s); entering request loop", len(hives))
 
+	// Signal readiness to the supervisor (peinit's Phase-1 registryd bootstrap
+	// waits for sd_notify READY=1 on $NOTIFY_SOCKET before declaring registryd
+	// up). Done now: the hives are registered with the kernel and we are about
+	// to serve requests, so the registry is usable.
+	notifyReady()
+
 	// peinit termination (PSD-006 §2 exit behaviour): close the device to
 	// unblock the read loop, then run deferred cleanup.
 	sigCh := make(chan os.Signal, 1)
@@ -100,4 +114,24 @@ func run(args []string) error {
 	}
 	log.Printf("loregd: device closed, exiting")
 	return nil
+}
+
+// notifyReady sends an sd_notify READY=1 datagram to $NOTIFY_SOCKET so the
+// supervisor (peinit) learns loregd is serving. Best-effort: a no-op when
+// NOTIFY_SOCKET is unset, and a logged warning (never fatal) on dial/write
+// failure — readiness signalling must not block or fail the request loop.
+func notifyReady() {
+	path := os.Getenv("NOTIFY_SOCKET")
+	if path == "" {
+		return
+	}
+	conn, err := net.Dial("unixgram", path)
+	if err != nil {
+		log.Printf("loregd: NOTIFY_SOCKET %q dial failed: %v", path, err)
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("READY=1\n")); err != nil {
+		log.Printf("loregd: NOTIFY_SOCKET %q write failed: %v", path, err)
+	}
 }
