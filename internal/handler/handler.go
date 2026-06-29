@@ -5,10 +5,12 @@
 package handler
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,39 @@ import (
 	"github.com/peios/loregd/internal/hivedb"
 	"github.com/peios/loregd/internal/rsi"
 )
+
+// RSI enumeration responses MUST be deterministically ordered. Consumers (the
+// LCS) walk RSI_LOOKUP / RSI_ENUM_CHILDREN / RSI_QUERY_VALUES results by dense
+// index across repeated, independent RSI calls, so an unstable order makes that
+// walk duplicate or skip entries — the source returning the same query in a
+// different order each time is a contract violation (PSD-006 §5). The SQL
+// UNION ALL queries and the Go grouping map are both unordered, so loregd
+// imposes a canonical order on every result set before it is encoded. These
+// helpers are that canonicalisation.
+
+// sortedGUIDs returns the GUIDs of set in ascending byte order.
+func sortedGUIDs(set map[rsi.GUID]bool) []rsi.GUID {
+	guids := make([]rsi.GUID, 0, len(set))
+	for g := range set {
+		guids = append(guids, g)
+	}
+	sort.Slice(guids, func(i, j int) bool {
+		return bytes.Compare(guids[i][:], guids[j][:]) < 0
+	})
+	return guids
+}
+
+// sortPathEntries orders per-layer path entries by (layer, sequence). Layer
+// resolution itself is order-independent (it selects a max), but a stable wire
+// order keeps the whole response reproducible.
+func sortPathEntries(entries []rsi.LookupPathEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].LayerName != entries[j].LayerName {
+			return entries[i].LayerName < entries[j].LayerName
+		}
+		return entries[i].Sequence < entries[j].Sequence
+	})
+}
 
 // Handler routes RSI operations to the correct hive database.
 type Handler struct {
@@ -217,9 +252,10 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 		log.Printf("lookup iteration error: %v", err)
 		return rsi.StatusStorageError, nil
 	}
+	sortPathEntries(entries)
 
 	var meta []rsi.LookupKeyMeta
-	for guid := range guidSet {
+	for _, guid := range sortedGUIDs(guidSet) {
 		m, err := readKeyMeta(db, guid)
 		if err != nil {
 			log.Printf("lookup meta error for %x: %v", guid, err)
@@ -431,8 +467,20 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 		return rsi.StatusStorageError, nil
 	}
 
+	// Emit children in a deterministic order (ascending folded name). Ranging
+	// the groups map directly would yield Go's randomised iteration order, which
+	// is the root cause of the dense-index enumeration walk seeing duplicate or
+	// missing keys across calls. See the canonicalisation note above.
+	foldedNames := make([]string, 0, len(groups))
+	for folded := range groups {
+		foldedNames = append(foldedNames, folded)
+	}
+	sort.Strings(foldedNames)
+
 	children := make([]rsi.EnumChildrenChild, 0, len(groups))
-	for _, g := range groups {
+	for _, folded := range foldedNames {
+		g := groups[folded]
+		sortPathEntries(g.entries)
 		children = append(children, rsi.EnumChildrenChild{
 			ChildName: g.displayName,
 			Entries:   g.entries,
@@ -440,7 +488,7 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 	}
 
 	var meta []rsi.LookupKeyMeta
-	for guid := range guidSet {
+	for _, guid := range sortedGUIDs(guidSet) {
 		m, err := readKeyMeta(db, guid)
 		if err != nil {
 			log.Printf("enum children meta error for %x: %v", guid, err)
