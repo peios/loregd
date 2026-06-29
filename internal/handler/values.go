@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"sort"
 
 	"github.com/peios/loregd/internal/fold"
 	"github.com/peios/loregd/internal/rsi"
@@ -89,6 +90,20 @@ func queryValueEntries(db Querier, req rsi.QueryValuesRequest) ([]rsi.QueryValue
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Deterministic order (folded value name, then layer, then sequence): the
+	// LCS walks values by dense index across repeated RSI calls, so an unstable
+	// order would dup/skip values exactly as an unordered child set does. The
+	// UNION ALL above is unordered, so canonicalise here (PSD-006 §5).
+	sort.SliceStable(entries, func(i, j int) bool {
+		fi, fj := fold.String(entries[i].ValueName), fold.String(entries[j].ValueName)
+		if fi != fj {
+			return fi < fj
+		}
+		if entries[i].LayerName != entries[j].LayerName {
+			return entries[i].LayerName < entries[j].LayerName
+		}
+		return entries[i].Sequence < entries[j].Sequence
+	})
 	return entries, nil
 }
 

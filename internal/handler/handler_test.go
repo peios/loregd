@@ -2,6 +2,7 @@ package handler
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/peios/loregd/internal/fold"
@@ -447,6 +448,81 @@ func TestEnumChildrenMultiple(t *testing.T) {
 	count, _ := d.Uint32()
 	if count != 2 {
 		t.Errorf("child count = %d, want 2", count)
+	}
+}
+
+// decodeEnumChildNames extracts just the child names from an RSI_ENUM_CHILDREN
+// response payload, in wire order.
+func decodeEnumChildNames(t *testing.T, payload []byte) []string {
+	t.Helper()
+	d := rsi.NewDecoder(payload)
+	count, err := d.Uint32()
+	if err != nil {
+		t.Fatalf("decode count: %v", err)
+	}
+	names := make([]string, 0, count)
+	for i := uint32(0); i < count; i++ {
+		name, err := d.String()
+		if err != nil {
+			t.Fatalf("decode child name: %v", err)
+		}
+		names = append(names, name)
+		entryCount, err := d.Uint32()
+		if err != nil {
+			t.Fatalf("decode entry count: %v", err)
+		}
+		for j := uint32(0); j < entryCount; j++ {
+			d.String() // layer
+			d.Uint8()  // target type
+			d.GUID()   // target guid
+			d.Uint64() // sequence
+		}
+	}
+	return names
+}
+
+// TestEnumChildrenDeterministicOrder is the regression test for the
+// non-deterministic enumeration bug: children were emitted in Go map iteration
+// order, so the LCS's dense-index walk (one RSI call per position) duplicated or
+// dropped keys. The response MUST be stably ordered across repeated calls
+// (PSD-006 §5), and a key present in multiple layers MUST collapse to a single,
+// resolved subkey rather than appearing once per layer.
+func TestEnumChildrenDeterministicOrder(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+
+	// Inserted deliberately out of alphabetical order.
+	names := []string{"Services", "Init", "Features", "Audit", "Network"}
+	for i, name := range names {
+		g := rsi.GUID{byte(0x70 + i)}
+		insertKey(t, hive, g, name, root, false)
+		insertPathEntry(t, hive, root, name, "base", g, uint64(i+1))
+	}
+	// "Init" also exists in a second layer — legal layering. It must still
+	// enumerate as ONE child, not two.
+	initVendor := rsi.GUID{0x90}
+	insertKey(t, hive, initVendor, "Init", root, false)
+	insertPathEntry(t, hive, root, "Init", "vendor", initVendor, 99)
+
+	want := []string{"Audit", "Features", "Init", "Network", "Services"}
+
+	var first []string
+	for call := 0; call < 50; call++ {
+		status, payload := h.handleEnumChildren(rsi.RequestHeader{}, encodeEnumChildren(root))
+		if status != rsi.StatusOK {
+			t.Fatalf("call %d: status = %d", call, status)
+		}
+		got := decodeEnumChildNames(t, payload)
+		if call == 0 {
+			first = got
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("child order = %v, want sorted unique %v", got, want)
+			}
+			continue
+		}
+		if !reflect.DeepEqual(got, first) {
+			t.Fatalf("call %d order = %v differs from first call %v (non-deterministic enumeration)", call, got, first)
+		}
 	}
 }
 
