@@ -88,6 +88,11 @@ func (d *Dispatcher) writeResponse(w io.Writer, requestID uint64, opCode uint16,
 	defer d.mu.Unlock()
 
 	if err := WriteResponse(w, requestID, opCode, status, payload); err != nil {
-		log.Printf("rsi: write response failed (request_id=%d): %v", requestID, err)
+		// The registry source device may reject a response and mark the source
+		// down when a late-response invariant cannot be recovered safely.  Keep
+		// enough protocol metadata to identify that operation without logging
+		// registry names, values, credentials, or response bytes.
+		log.Printf("rsi: write response failed (request_id=%d op_code=0x%04X status=%d payload_len=%d): %v",
+			requestID, opCode, status, len(payload), err)
 	}
 }

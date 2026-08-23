@@ -10,18 +10,18 @@ func TestParseValid(t *testing.T) {
 	}{
 		{
 			"single hive",
-			[]string{"Machine=/var/lib/registry/machine.regdb"},
-			[]HiveConfig{{Name: "Machine", Path: "/var/lib/registry/machine.regdb"}},
+			[]string{"Machine=/var/state/registry/machine.regdb"},
+			[]HiveConfig{{Name: "Machine", Path: "/var/state/registry/machine.regdb"}},
 		},
 		{
 			"multiple hives",
 			[]string{
-				"Machine=/var/lib/registry/machine.regdb",
-				"Users=/var/lib/registry/users.regdb",
+				"Machine=/var/state/registry/machine.regdb",
+				"Users=/var/state/registry/users.regdb",
 			},
 			[]HiveConfig{
-				{Name: "Machine", Path: "/var/lib/registry/machine.regdb"},
-				{Name: "Users", Path: "/var/lib/registry/users.regdb"},
+				{Name: "Machine", Path: "/var/state/registry/machine.regdb"},
+				{Name: "Users", Path: "/var/state/registry/users.regdb"},
 			},
 		},
 		{
@@ -63,8 +63,8 @@ func TestParseErrors(t *testing.T) {
 	}{
 		{"no arguments", nil},
 		{"empty slice", []string{}},
-		{"missing equals", []string{"Machine/var/lib/machine.regdb"}},
-		{"empty hive name", []string{"=/var/lib/machine.regdb"}},
+		{"missing equals", []string{"Machine/var/state/machine.regdb"}},
+		{"empty hive name", []string{"=/var/state/machine.regdb"}},
 		{"empty path", []string{"Machine="}},
 		{"relative path", []string{"Machine=relative/path.db"}},
 		{"backslash in name", []string{"Mach\\ine=/a.db"}},
