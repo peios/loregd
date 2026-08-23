@@ -3,11 +3,20 @@ package rsi
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
+	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+type rejectingResponseWriter struct{}
+
+func (rejectingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("response rejected")
+}
 
 // buildRequest constructs a complete wire request.
 func buildRequest(requestID uint64, opCode uint16, txnID uint64, payload []byte) []byte {
@@ -177,5 +186,46 @@ func TestDispatchHandlerPayload(t *testing.T) {
 	}
 	if name != "Machine" {
 		t.Errorf("echoed name = %q, want %q", name, "Machine")
+	}
+}
+
+func TestDispatchWriteFailureLogsNonSensitiveProtocolMetadata(t *testing.T) {
+	d := NewDispatcher()
+	d.Register(OpDeleteEntry, func(RequestHeader, []byte) (uint32, []byte) {
+		return StatusNotEmpty, []byte("secret response body")
+	})
+
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	d.Dispatch(rejectingResponseWriter{}, RequestHeader{
+		RequestID: 392,
+		OpCode:    OpDeleteEntry,
+	}, nil)
+
+	got := logs.String()
+	for _, want := range []string{
+		"request_id=392",
+		"op_code=0x0004",
+		"status=4",
+		"payload_len=20",
+		"response rejected",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log %q does not contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "secret response body") {
+		t.Errorf("log leaked response payload: %q", got)
 	}
 }

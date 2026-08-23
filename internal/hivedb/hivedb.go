@@ -53,7 +53,7 @@ type HiveDB struct {
 // and creates the read connection pool.
 func Open(name, path string) (*HiveDB, error) {
 	// loregd owns its hive storage: create the database's parent directory if it
-	// is absent (e.g. /var/lib/loregd on first boot) so SQLite can create the
+	// is absent (e.g. /var/state/loregd on first boot) so SQLite can create the
 	// file. The DB file itself is created by the driver.
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

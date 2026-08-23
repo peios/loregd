@@ -5,12 +5,14 @@ name         = "loregd"
 version      = "{{version}}-1"
 architecture = "x86_64"
 description  = "Local Registry Daemon - RSI storage backend for LCS hives"
+license      = "MIT"
 
 # Build-ref (leading ':' = the default build stage output, $PEKIT_OUT). loregd is
 # a single CGO-free static Go binary, so the build drops it straight at the stage
 # root as `loregd`. It installs to /usr/sbin: loregd is a non-interactive system
 # daemon (exec'd by peinit, not invoked from a user's shell), so it belongs in
-# sbin — like prelude (/usr/sbin/prelude) and the registryd role path it answers.
+# sbin — like prelude (/usr/sbin/prelude) and the package-storage registryd role
+# path it answers. Runtime callers use the projected /sbin/registryd path.
 [files]
 ":loregd" = "usr/sbin/loregd"
 
@@ -19,8 +21,8 @@ description  = "Local Registry Daemon - RSI storage backend for LCS hives"
 # payload file that answers the role's `binary` slot. It deliberately does NOT
 # declare the claim path: that belongs to the consumer that hard-codes it, namely
 # peinit (its compiled-in Phase 1 service definition has a fixed
-# `ImagePath=/usr/sbin/registryd`, PSD-007 §2). The package manager joins the
-# two by (role, slot) and materialises /usr/sbin/registryd -> /usr/bin/loregd as
+# `ImagePath=/sbin/registryd`, PSD-007 §2). The package manager joins the
+# two by (role, slot) and materialises /usr/sbin/registryd -> /usr/sbin/loregd as
 # a manager-managed symlink when loregd holds the role. Keeping the path out of
 # loregd means a package never dictates where it lands — and an alternative RSI
 # source can provide the same role without colliding.
