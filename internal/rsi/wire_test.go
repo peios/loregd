@@ -99,10 +99,10 @@ func TestRequestHeaderRoundTrip(t *testing.T) {
 	// Build a minimal request: header only, no payload.
 	var buf bytes.Buffer
 	msg := make([]byte, RequestHeaderSize)
-	binary.LittleEndian.PutUint32(msg[0:4], RequestHeaderSize)  // total_len
-	binary.LittleEndian.PutUint64(msg[4:12], 42)                // request_id
-	binary.LittleEndian.PutUint16(msg[12:14], OpLookup)         // op_code
-	binary.LittleEndian.PutUint64(msg[14:22], 0)                // txn_id
+	binary.LittleEndian.PutUint32(msg[0:4], RequestHeaderSize) // total_len
+	binary.LittleEndian.PutUint64(msg[4:12], 42)               // request_id
+	binary.LittleEndian.PutUint16(msg[12:14], OpLookup)        // op_code
+	binary.LittleEndian.PutUint64(msg[14:22], 0)               // txn_id
 	buf.Write(msg)
 
 	hdr, payload, err := ReadRequestHeader(&buf)

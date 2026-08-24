@@ -11,8 +11,8 @@ func TestSIDSize(t *testing.T) {
 		sid  SID
 		want int
 	}{
-		{"SYSTEM", SIDSystem, 12},           // 1+1+6+1*4
-		{"Administrators", SIDAdministrators, 16}, // 1+1+6+2*4
+		{"SYSTEM", SIDSystem, 12},                         // 1+1+6+1*4
+		{"Administrators", SIDAdministrators, 16},         // 1+1+6+2*4
 		{"AuthenticatedUsers", SIDAuthenticatedUsers, 12}, // 1+1+6+1*4
 	}
 	for _, tt := range tests {
