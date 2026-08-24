@@ -228,6 +228,41 @@ func isVolatileQ(q Querier, guid rsi.GUID) (bool, error) {
 	return false, errKeyNotFound
 }
 
+// keyExistsInQ reports whether a key GUID already exists in the named schema.
+//
+// A primary key constrains one schema only, and persistent and volatile data
+// live in two schemas carrying identical tables. So the target table's PK --
+// which is what every create relies on for RSI_ALREADY_EXISTS -- says nothing
+// about the other store, and the same GUID could come to exist in both. Reads
+// then resolve it arbitrarily to whichever row a UNION ALL puts first, leaving
+// the loser unreachable while still occupying its GUID.
+func keyExistsInQ(q Querier, schema string, guid rsi.GUID) (bool, error) {
+	var one int
+	err := q.QueryRow("SELECT 1 FROM "+schema+".keys WHERE guid = ?", guid[:]).Scan(&one)
+	if err == nil {
+		return true, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, fmt.Errorf("keyExistsInQ %s: %w", schema, err)
+	}
+	return false, nil
+}
+
+// pathEntryExistsInQ is the same check for a path entry's uniqueness triple.
+func pathEntryExistsInQ(q Querier, schema string, parentGUID rsi.GUID, foldedName, layer string) (bool, error) {
+	var one int
+	err := q.QueryRow(
+		"SELECT 1 FROM "+schema+".path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?",
+		parentGUID[:], foldedName, layer).Scan(&one)
+	if err == nil {
+		return true, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, fmt.Errorf("pathEntryExistsInQ %s: %w", schema, err)
+	}
+	return false, nil
+}
+
 // --- Path operations ---
 
 func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
@@ -334,8 +369,22 @@ func (h *Handler) handleCreateEntry(hdr rsi.RequestHeader, payload []byte) (uint
 		log.Printf("create entry isVolatile: %v", volErr)
 		return rsi.StatusStorageError, nil
 	}
+	other := "volatile"
 	if vol {
 		table = "volatile.path_entries"
+		other = "main"
+	}
+
+	// As for keys: the PK on (parent_guid, child_name_folded, layer) binds one
+	// schema, so the same triple could exist in both. Nothing de-duplicates on
+	// read, so RSI_LOOKUP and RSI_ENUM_CHILDREN emitted both rows inside one
+	// child block -- two entries claiming the same name in the same layer,
+	// which the layer model does not expect.
+	if exists, err := pathEntryExistsInQ(wq, other, req.ParentGUID, foldedName, req.LayerName); err != nil {
+		log.Printf("create entry cross-schema check: %v", err)
+		return rsi.StatusStorageError, nil
+	} else if exists {
+		return rsi.StatusAlreadyExists, nil
 	}
 
 	_, err = wq.Exec(`
@@ -576,8 +625,20 @@ func (h *Handler) handleCreateKey(hdr rsi.RequestHeader, payload []byte) (uint32
 	foldedName := fold.String(req.Name)
 
 	table := "main.keys"
+	other := "volatile"
 	if req.Volatile {
 		table = "volatile.keys"
+		other = "main"
+	}
+
+	// The target table's PK covers only its own schema, so ask the other one
+	// too. Without this a create whose GUID already exists in the opposite
+	// store returned RSI_OK and left the GUID in both.
+	if exists, err := keyExistsInQ(wq, other, req.GUID); err != nil {
+		log.Printf("create key cross-schema check: %v", err)
+		return rsi.StatusStorageError, nil
+	} else if exists {
+		return rsi.StatusAlreadyExists, nil
 	}
 
 	volInt := 0
