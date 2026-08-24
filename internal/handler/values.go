@@ -24,9 +24,9 @@ func (h *Handler) handleQueryValues(hdr rsi.RequestHeader, payload []byte) (uint
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	if !ok {
+		return st, nil
 	}
 
 	db, err := h.readQ(hdr, hive)
@@ -131,6 +131,25 @@ func queryBlanketTombstones(db Querier, guid rsi.GUID) ([]rsi.BlanketTombstoneEn
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// The blanket list is the one enumeration block that was left
+	// uncanonicalised. It comes from the same unordered UNION ALL as the
+	// value entries and travels in the same message, so it gets the same
+	// (folded layer, sequence) order.
+	//
+	// Resolution itself is order-independent — it selects by (precedence,
+	// sequence) — so this is not a live correctness failure. It matters
+	// because the deterministic-enumeration obligation is either met or
+	// not, and because a blanket list with a duplicate winning
+	// (precedence, sequence) is rejected by the kernel as malformed
+	// source data: stable ordering makes that failure reproducible rather
+	// than intermittent.
+	sort.SliceStable(blankets, func(i, j int) bool {
+		fi, fj := fold.String(blankets[i].LayerName), fold.String(blankets[j].LayerName)
+		if fi != fj {
+			return fi < fj
+		}
+		return blankets[i].Sequence < blankets[j].Sequence
+	})
 	return blankets, nil
 }
 
@@ -140,9 +159,9 @@ func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32,
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
@@ -254,9 +273,9 @@ func (h *Handler) handleDeleteValueEntry(hdr rsi.RequestHeader, payload []byte) 
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
@@ -286,9 +305,9 @@ func (h *Handler) handleSetBlanketTombstone(hdr rsi.RequestHeader, payload []byt
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
