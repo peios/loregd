@@ -150,9 +150,20 @@ func mapReadErr(op string, err error) uint32 {
 
 // --- Hive resolution ---
 
-func (h *Handler) resolveHive(guid rsi.GUID) *hivedb.HiveDB {
+// resolveHive maps a key GUID to the hive that holds it. A nil hive with
+// a nil error means no hive holds the GUID; a non-nil error means at
+// least one hive could not be read, and the caller must report a storage
+// failure rather than a negative answer.
+//
+// Only sql.ErrNoRows advances to the next hive. Treating every error as
+// "not in this one" reported an unreadable database to LCS as "this key
+// does not exist" — the worst available mapping, because the kernel
+// cannot then distinguish a key that was deleted from one it can no
+// longer read, and a caller sees a clean negative rather than something
+// to retry or escalate.
+func (h *Handler) resolveHive(guid rsi.GUID) (*hivedb.HiveDB, error) {
 	if v, ok := h.guidCache.Load(guid); ok {
-		return v.(*hivedb.HiveDB)
+		return v.(*hivedb.HiveDB), nil
 	}
 	for _, hive := range h.hives {
 		var exists int
@@ -160,16 +171,35 @@ func (h *Handler) resolveHive(guid rsi.GUID) *hivedb.HiveDB {
 			"SELECT 1 FROM main.keys WHERE guid = ? UNION ALL SELECT 1 FROM volatile.keys WHERE guid = ? LIMIT 1",
 			guid[:], guid[:],
 		).Scan(&exists)
-		if err == nil {
+		switch {
+		case err == nil:
 			h.guidCache.Store(guid, hive)
-			return hive
+			return hive, nil
+		case errors.Is(err, sql.ErrNoRows):
+			continue // genuinely absent from this hive
+		default:
+			return nil, fmt.Errorf("probing hive %s for %x: %w", hive.Name, guid, err)
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func (h *Handler) resolveHiveByParent(parentGUID rsi.GUID) *hivedb.HiveDB {
+func (h *Handler) resolveHiveByParent(parentGUID rsi.GUID) (*hivedb.HiveDB, error) {
 	return h.resolveHive(parentGUID)
+}
+
+// resolveHiveStatus is the caller-side shape of resolveHive: it returns
+// the hive, or the RSI status to answer with and false.
+func (h *Handler) resolveHiveStatus(op string, guid rsi.GUID) (*hivedb.HiveDB, uint32, bool) {
+	hive, err := h.resolveHive(guid)
+	if err != nil {
+		log.Printf("%s: %v", op, err)
+		return nil, rsi.StatusStorageError, false
+	}
+	if hive == nil {
+		return nil, rsi.StatusNotFound, false
+	}
+	return hive, 0, true
 }
 
 // errKeyNotFound is returned by isVolatileQ when the GUID is not in either database.
@@ -206,9 +236,9 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHiveByParent(req.ParentGUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	if !ok {
+		return st, nil
 	}
 
 	db, err := h.readQ(hdr, hive)
@@ -275,9 +305,9 @@ func (h *Handler) handleCreateEntry(hdr rsi.RequestHeader, payload []byte) (uint
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHiveByParent(req.ParentGUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
@@ -329,9 +359,9 @@ func (h *Handler) handleHideEntry(hdr rsi.RequestHeader, payload []byte) (uint32
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHiveByParent(req.ParentGUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
@@ -372,9 +402,9 @@ func (h *Handler) handleDeleteEntry(hdr rsi.RequestHeader, payload []byte) (uint
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHiveByParent(req.ParentGUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
@@ -404,9 +434,9 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHiveByParent(req.ParentGUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	if !ok {
+		return st, nil
 	}
 
 	db, err := h.readQ(hdr, hive)
@@ -459,6 +489,16 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 		if !ok {
 			g = &childGroup{displayName: childName}
 			groups[childNameFolded] = g
+		} else if childName < g.displayName {
+			// Two rows can share a folded name and differ in stored case
+			// — "Foo" in one store, "FOO" in the other — and the union
+			// above is unordered, so whichever arrived first decided the
+			// case reported. The order of children was stable (it sorts
+			// on the folded name) but the name itself was not, so a
+			// caller comparing successive enumerations saw it change.
+			// Lowest bytewise wins, which is a property of the set rather
+			// than of the row order.
+			g.displayName = childName
 		}
 		g.entries = append(g.entries, entry)
 	}
@@ -510,7 +550,11 @@ func (h *Handler) handleCreateKey(hdr rsi.RequestHeader, payload []byte) (uint32
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.ParentGUID)
+	hive, err := h.resolveHive(req.ParentGUID)
+	if err != nil {
+		log.Printf("create entry: %v", err)
+		return rsi.StatusStorageError, nil
+	}
 	if hive == nil {
 		for _, hv := range h.hives {
 			if rsi.GUID(hv.RootGUID) == req.ParentGUID {
@@ -574,9 +618,9 @@ func (h *Handler) handleReadKey(hdr rsi.RequestHeader, payload []byte) (uint32, 
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	if !ok {
+		return st, nil
 	}
 
 	db, err := h.readQ(hdr, hive)
@@ -607,9 +651,9 @@ func (h *Handler) handleWriteKey(hdr rsi.RequestHeader, payload []byte) (uint32,
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
-	if hive == nil {
-		return rsi.StatusNotFound, nil
+	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	if !ok {
+		return st, nil
 	}
 
 	wq, err := h.writeQ(hdr, hive)
@@ -670,8 +714,15 @@ func (h *Handler) handleDropKey(hdr rsi.RequestHeader, payload []byte) (uint32, 
 		return rsi.StatusInvalid, nil
 	}
 
-	hive := h.resolveHive(req.GUID)
+	hive, err := h.resolveHive(req.GUID)
+	if err != nil {
+		log.Printf("drop key: %v", err)
+		return rsi.StatusStorageError, nil
+	}
 	if hive == nil {
+		// Dropping a key that is already gone is a success. Dropping one
+		// whose hive cannot be read is not, which is why the error is
+		// checked first.
 		return rsi.StatusOK, nil
 	}
 

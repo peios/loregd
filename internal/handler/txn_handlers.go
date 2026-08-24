@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/peios/loregd/internal/fold"
 	"github.com/peios/loregd/internal/hivedb"
@@ -76,6 +78,13 @@ func (h *Handler) handleDeleteLayer(hdr rsi.RequestHeader, payload []byte) (uint
 		}
 		allOrphans = append(allOrphans, orphans...)
 	}
+
+	// The hive walk above ranges a Go map, so identical calls produced
+	// the concatenated orphans in different orders. Sort bytewise, as
+	// sortedGUIDs already does for every other GUID array on the wire.
+	sort.Slice(allOrphans, func(i, j int) bool {
+		return bytes.Compare(allOrphans[i][:], allOrphans[j][:]) < 0
+	})
 
 	// Evict orphaned GUIDs from cache. The key records still exist
 	// but are unreachable; LCS will issue RSI_DROP_KEY for each.
