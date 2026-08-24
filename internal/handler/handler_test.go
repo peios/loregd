@@ -850,3 +850,91 @@ func boolByte(b bool) uint8 {
 	}
 	return 0
 }
+
+// --- Cross-schema uniqueness ---
+
+// A primary key constrains one schema only, and persistent and volatile data
+// live in two schemas carrying identical tables. Every create relied on the
+// target table's PK for RSI_ALREADY_EXISTS, which says nothing about the other
+// store.
+func TestCreateKeyRejectsGUIDHeldByTheOtherStore(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		firstIsVol  bool
+		secondIsVol bool
+	}{
+		{"volatile then persistent", true, false},
+		{"persistent then volatile", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, hive := testHandler(t)
+			root := rsi.GUID(hive.RootGUID)
+			guid := rsi.GUID{0xE1, 0x77}
+
+			status, _ := h.handleCreateKey(rsi.RequestHeader{},
+				encodeCreateKey(guid, "First", root, []byte{0x01}, tc.firstIsVol, false))
+			if status != rsi.StatusOK {
+				t.Fatalf("first create status = %d, want OK", status)
+			}
+
+			status, _ = h.handleCreateKey(rsi.RequestHeader{},
+				encodeCreateKey(guid, "Second", root, []byte{0x01}, tc.secondIsVol, false))
+			if status != rsi.StatusAlreadyExists {
+				t.Fatalf("second create status = %d, want AlreadyExists", status)
+			}
+
+			// The point of the status, not just the status: the GUID must not
+			// be in both stores. Whichever lost would be unreachable, since
+			// readKeyMeta resolves through a UNION ALL that puts main first,
+			// while still occupying its GUID.
+			var count int
+			hive.WriteDB().QueryRow(`
+				SELECT (SELECT COUNT(*) FROM main.keys WHERE guid = ?)
+				     + (SELECT COUNT(*) FROM volatile.keys WHERE guid = ?)
+			`, guid[:], guid[:]).Scan(&count)
+			if count != 1 {
+				t.Errorf("GUID present in %d stores, want 1", count)
+			}
+		})
+	}
+}
+
+func TestCreateEntryRejectsTripleHeldByTheOtherStore(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+	persistentChild := rsi.GUID{0xE2, 0x01}
+	volatileChild := rsi.GUID{0xE2, 0x02}
+
+	// Two child keys, one in each store, so the two creates route to different
+	// path_entries tables while naming the same (parent, name, layer) triple.
+	if status, _ := h.handleCreateKey(rsi.RequestHeader{},
+		encodeCreateKey(persistentChild, "Child", root, []byte{0x01}, false, false)); status != rsi.StatusOK {
+		t.Fatalf("persistent child create status = %d", status)
+	}
+	if status, _ := h.handleCreateKey(rsi.RequestHeader{},
+		encodeCreateKey(volatileChild, "Child", root, []byte{0x01}, true, false)); status != rsi.StatusOK {
+		t.Fatalf("volatile child create status = %d", status)
+	}
+
+	if status, _ := h.handleCreateEntry(rsi.RequestHeader{},
+		encodeCreateEntry(root, "Child", "base", persistentChild, 1)); status != rsi.StatusOK {
+		t.Fatalf("first entry status = %d, want OK", status)
+	}
+	status, _ := h.handleCreateEntry(rsi.RequestHeader{},
+		encodeCreateEntry(root, "Child", "base", volatileChild, 2))
+	if status != rsi.StatusAlreadyExists {
+		t.Fatalf("second entry status = %d, want AlreadyExists", status)
+	}
+
+	// Both rows would land in one child block on RSI_LOOKUP and
+	// RSI_ENUM_CHILDREN, giving the kernel two entries claiming the same name
+	// in the same layer.
+	var count int
+	hive.WriteDB().QueryRow(`
+		SELECT (SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?)
+		     + (SELECT COUNT(*) FROM volatile.path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?)
+	`, root[:], "child", "base", root[:], "child", "base").Scan(&count)
+	if count != 1 {
+		t.Errorf("entry present %d times across stores, want 1", count)
+	}
+}
