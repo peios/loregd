@@ -4,10 +4,10 @@ package rsi
 // Op codes for RSI operations.
 const (
 	// Path operations
-	OpLookup      uint16 = 0x01
-	OpCreateEntry uint16 = 0x02
-	OpHideEntry   uint16 = 0x03
-	OpDeleteEntry uint16 = 0x04
+	OpLookup       uint16 = 0x01
+	OpCreateEntry  uint16 = 0x02
+	OpHideEntry    uint16 = 0x03
+	OpDeleteEntry  uint16 = 0x04
 	OpEnumChildren uint16 = 0x05
 
 	// Key operations
@@ -17,9 +17,9 @@ const (
 	OpDropKey   uint16 = 0x13
 
 	// Value operations
-	OpQueryValues       uint16 = 0x20
-	OpSetValue          uint16 = 0x21
-	OpDeleteValueEntry  uint16 = 0x22
+	OpQueryValues         uint16 = 0x20
+	OpSetValue            uint16 = 0x21
+	OpDeleteValueEntry    uint16 = 0x22
 	OpSetBlanketTombstone uint16 = 0x23
 
 	// Transaction operations

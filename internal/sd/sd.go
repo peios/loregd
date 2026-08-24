@@ -41,10 +41,10 @@ const (
 	KeyNotify           = 0x0010
 	KeyCreateLink       = 0x0020
 
-	Delete       = 0x00010000
-	ReadControl  = 0x00020000
-	WriteDac     = 0x00040000
-	WriteOwner   = 0x00080000
+	Delete      = 0x00010000
+	ReadControl = 0x00020000
+	WriteDac    = 0x00040000
+	WriteOwner  = 0x00080000
 
 	KeyAllAccess = 0x000F003F
 	KeyRead      = 0x00020019
