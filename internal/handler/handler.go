@@ -319,14 +319,37 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 	}
 	sortPathEntries(entries)
 
+	// A key is created as two requests — REG create-entry (the path entry)
+	// then create-key (the key row) — outside any transaction, so a lookup
+	// landing between them finds an entry whose target has no key row yet.
+	// That is "not there yet", not a storage failure: drop the dangling
+	// entry from the answer and the caller sees the child as absent, exactly
+	// as it would have a moment earlier. Reporting StatusStorageError here
+	// aborted the kernel's registration bootstrap when Phase-1.5 autoapply
+	// raced it, leaving no self-watch armed for the whole boot (PEI-510).
 	var meta []rsi.LookupKeyMeta
+	dangling := make(map[rsi.GUID]bool)
 	for _, guid := range sortedGUIDs(guidSet) {
 		m, err := readKeyMeta(db, guid)
+		if errors.Is(err, sql.ErrNoRows) {
+			dangling[guid] = true
+			continue
+		}
 		if err != nil {
 			log.Printf("lookup meta error for %x: %v", guid, err)
 			return rsi.StatusStorageError, nil
 		}
 		meta = append(meta, m)
+	}
+	if len(dangling) > 0 {
+		kept := entries[:0]
+		for _, e := range entries {
+			if e.TargetType == rsi.TargetGUID && dangling[e.TargetGUID] {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		entries = kept
 	}
 
 	enc := rsi.NewEncoder(256)
