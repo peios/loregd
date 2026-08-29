@@ -145,6 +145,42 @@ func TestLookupFindsEntry(t *testing.T) {
 	}
 }
 
+// A key is created as create-entry then create-key, so a lookup can land
+// between the two and find a path entry whose key row does not exist yet.
+// That must read as "absent", not as a storage error: the kernel's
+// registration bootstrap treats a storage error as fatal and, when Phase-1.5
+// autoapply raced it, never armed its self-watch (PEI-510).
+func TestLookupSkipsEntryWhoseKeyIsNotYetVisible(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+	childGUID := rsi.GUID{0x0a, 0x0b, 0x0c}
+
+	insertPathEntry(t, hive, root, "Network", "base", childGUID, 1)
+	h.guidCache.Store(childGUID, hive)
+
+	status, payload := h.handleLookup(rsi.RequestHeader{}, encodeLookup(root, "Network"))
+	if status != rsi.StatusOK {
+		t.Fatalf("status = %d, want OK", status)
+	}
+	d := rsi.NewDecoder(payload)
+	count, _ := d.Uint32()
+	if count != 0 {
+		t.Fatalf("entry count = %d, want 0 (dangling entry dropped)", count)
+	}
+
+	// Once the key row lands the same lookup answers normally.
+	insertKey(t, hive, childGUID, "Network", root, false)
+	status, payload = h.handleLookup(rsi.RequestHeader{}, encodeLookup(root, "Network"))
+	if status != rsi.StatusOK {
+		t.Fatalf("status after key insert = %d, want OK", status)
+	}
+	d = rsi.NewDecoder(payload)
+	count, _ = d.Uint32()
+	if count != 1 {
+		t.Fatalf("entry count after key insert = %d, want 1", count)
+	}
+}
+
 func TestLookupCaseInsensitive(t *testing.T) {
 	h, hive := testHandler(t)
 	root := rsi.GUID(hive.RootGUID)
