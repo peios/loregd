@@ -67,12 +67,32 @@ func (h *Handler) handleDeleteLayer(hdr rsi.RequestHeader, payload []byte) (uint
 		return rsi.StatusInvalid, nil
 	}
 
+	// This deletes data, so it is refused under a read-only transaction like
+	// every other mutating operation. It cannot *join* a read-write one — it
+	// spans every hive and a transaction binds to exactly one — so it is
+	// checked here rather than routed through writeQ.
+	if err := h.txns.mutationAllowed(hdr.TxnID); err != nil {
+		return mapWriteErr("delete layer", err), nil
+	}
+
+	// Each hive allows a single write connection, so opening one here while a
+	// transaction holds it blocks indefinitely. Decline instead: the caller can
+	// commit and retry, which is the same answer RSI_FLUSH already gives.
+	if h.txns.anyWriteBound() {
+		return rsi.StatusTxnBusy, nil
+	}
+
 	var allOrphans []rsi.GUID
 
 	// RSI_DELETE_LAYER applies to ALL hives.
 	for _, hive := range h.hives {
 		orphans, err := deleteLayerFromHive(hive, req.LayerName)
 		if err != nil {
+			// A contended write is RSI_TXN_BUSY, not a storage error — the
+			// same distinction every other write path draws.
+			if isBusy(err) {
+				return rsi.StatusTxnBusy, nil
+			}
 			log.Printf("delete layer %q from %s: %v", req.LayerName, hive.Name, err)
 			return rsi.StatusStorageError, nil
 		}
@@ -101,6 +121,10 @@ func (h *Handler) handleFlush(hdr rsi.RequestHeader, payload []byte) (uint32, []
 	req, err := rsi.DecodeFlushRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
+	}
+
+	if err := h.txns.mutationAllowed(hdr.TxnID); err != nil {
+		return mapWriteErr("flush", err), nil
 	}
 
 	foldedName := fold.String(req.HiveName)

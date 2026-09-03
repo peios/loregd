@@ -147,3 +147,81 @@ func TestReadOnlyTxnReleaseAllowsReuse(t *testing.T) {
 	}
 	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(90))
 }
+
+// TestReadOnlyTxnRejectsDeleteLayerAndFlush: RSI_DELETE_LAYER and RSI_FLUSH
+// never consulted hdr.TxnID at all, so they executed happily under a read-only
+// transaction — DELETE_LAYER actually deleting data (PEI-231). They cannot take
+// the transaction's pinned connection (DELETE_LAYER spans every hive, and a
+// transaction binds one), so they answer the question directly instead of
+// routing through writeQ; the answer must be the same RSI_INVALID.
+func TestReadOnlyTxnRejectsDeleteLayerAndFlush(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+	guid := rsi.GUID{0xD1}
+
+	insertKey(t, hive, guid, "LayerChild", root, false)
+	insertPathEntry(t, hive, root, "LayerChild", "role-x", guid, 1)
+	insertPathEntry(t, hive, root, "LayerChild", "base", guid, 0)
+
+	status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxnMode(91, rsi.TxnReadOnly))
+	if status != rsi.StatusOK {
+		t.Fatalf("begin read-only: status = %d", status)
+	}
+	hdr := rsi.RequestHeader{TxnID: 91}
+
+	status, _ = h.handleDeleteLayer(hdr, encodeDeleteLayer("role-x"))
+	if status != rsi.StatusInvalid {
+		t.Errorf("delete layer on read-only txn: status = %d, want StatusInvalid", status)
+	}
+
+	status, _ = h.handleFlush(hdr, encodeFlush(hive.Name))
+	if status != rsi.StatusInvalid {
+		t.Errorf("flush on read-only txn: status = %d, want StatusInvalid", status)
+	}
+
+	// The layer must still be there: the status is the symptom, the deletion
+	// is the defect, and a check that only asserted the code would pass while
+	// the rows were still being removed.
+	var entries int
+	hive.WriteDB().QueryRow(
+		`SELECT COUNT(*) FROM main.path_entries WHERE layer = ?`, "role-x").Scan(&entries)
+	if entries != 1 {
+		t.Errorf("role-x path entries = %d, want 1 (nothing deleted)", entries)
+	}
+
+	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(91))
+}
+
+// TestDeleteLayerDeclinesWhileATransactionHoldsAWrite: each hive allows one
+// write connection, so RSI_DELETE_LAYER opening its own while a read-write
+// transaction holds it blocked indefinitely (PEI-230). It now declines with
+// RSI_TXN_BUSY, the same answer RSI_FLUSH already gave.
+func TestDeleteLayerDeclinesWhileATransactionHoldsAWrite(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+
+	status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(92))
+	if status != rsi.StatusOK {
+		t.Fatalf("begin: status = %d", status)
+	}
+	hdr := rsi.RequestHeader{TxnID: 92}
+
+	// Bind the write connection with a real mutating op.
+	status, _ = h.handleCreateKey(hdr, encodeCreateKey(rsi.GUID{0xD2}, "Bound", root, []byte{0x01}, false, false))
+	if status != rsi.StatusOK {
+		t.Fatalf("create key in txn: status = %d", status)
+	}
+
+	status, _ = h.handleDeleteLayer(rsi.RequestHeader{}, encodeDeleteLayer("role-x"))
+	if status != rsi.StatusTxnBusy {
+		t.Errorf("delete layer while a write is bound: status = %d, want StatusTxnBusy", status)
+	}
+
+	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(92))
+
+	// Once the transaction is gone it proceeds normally.
+	status, _ = h.handleDeleteLayer(rsi.RequestHeader{}, encodeDeleteLayer("role-x"))
+	if status != rsi.StatusOK {
+		t.Errorf("delete layer after abort: status = %d, want StatusOK", status)
+	}
+}
