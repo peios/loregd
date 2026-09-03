@@ -145,6 +145,46 @@ func (m *txnManager) addAbortHook(txnID uint64, fn func()) {
 }
 
 // hiveBusy returns true if any transaction is bound to the given hive.
+// mutationAllowed reports whether a mutating operation tagged with txnID may
+// proceed, giving the same answers getOrBindWrite gives every handler that
+// routes through writeQ. A zero txnID is non-transactional and always allowed;
+// an unknown one is an error; a read-only one is errReadOnlyTxn.
+//
+// It exists for the operations that cannot take a transaction's pinned
+// connection — RSI_DELETE_LAYER spans every hive, and RSI_FLUSH checkpoints one
+// — which previously did not consult hdr.TxnID at all and so mutated happily
+// under a read-only transaction (PEI-231).
+func (m *txnManager) mutationAllowed(txnID uint64) error {
+	if txnID == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info := m.txns[txnID]
+	if info == nil {
+		return fmt.Errorf("unknown transaction %d", txnID)
+	}
+	if info.readOnly {
+		return errReadOnlyTxn
+	}
+	return nil
+}
+
+// anyWriteBound reports whether any transaction currently holds a pinned write
+// connection, on any hive. hiveBusy answers this for one hive; RSI_DELETE_LAYER
+// touches all of them, and MaxOpenConns is 1 per hive, so it must ask about all
+// of them or block forever on the one that is taken (PEI-230).
+func (m *txnManager) anyWriteBound() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, info := range m.txns {
+		if info.conn != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *txnManager) hiveBusy(hive *hivedb.HiveDB) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
