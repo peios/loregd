@@ -1,6 +1,13 @@
 package fold
 
-import "testing"
+import (
+	"bufio"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"unicode"
+)
 
 func TestASCII(t *testing.T) {
 	tests := []struct {
@@ -33,8 +40,8 @@ func TestUnicode(t *testing.T) {
 		{"cyrillic", "КИРИЛЛИЦА", "кириллица"},
 		{"german sharp s unchanged", "straße", "straße"},
 		{"capital sharp s folds", "STRAẞE", "straße"},
-		{"kelvin sign", "\u212A", "k"},
-		{"angstrom sign", "\u212B", "\u00e5"},
+		{"kelvin sign", "K", "k"},
+		{"angstrom sign", "Å", "å"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -46,22 +53,43 @@ func TestUnicode(t *testing.T) {
 	}
 }
 
-func TestCaseFoldingDivergences(t *testing.T) {
-	// These three codepoints diverge between unicode.ToLower and
-	// CaseFolding.txt C+S entries. Our implementation must match
-	// CaseFolding.txt exactly.
+// TestLowercasingIsNotFolding pins the codepoints where Go's
+// unicode.ToLower and Simple Case Folding disagree. The old
+// implementation was ToLower plus three fixes and diverged from the
+// kernel's table on 222 codepoints; every class of that divergence has a
+// representative here.
+func TestLowercasingIsNotFolding(t *testing.T) {
 	tests := []struct {
 		name     string
 		in, want string
 	}{
-		{"micro sign folds to mu", "\u00B5", "\u03BC"},
-		{"long s folds to s", "\u017F", "s"},
-		{"I with dot above unchanged", "\u0130", "\u0130"},
-		{"micro sign in context", "a\u00B5b", "a\u03BCb"},
-		{"long s in context", "a\u017Fb", "asb"},
-		{"I-dot in context", "A\u0130B", "a\u0130b"},
-		{"micro and mu collide", "\u00B5key", "\u03BCkey"},
-		{"mu stays mu", "\u03BCkey", "\u03BCkey"},
+		// The three the old implementation already corrected.
+		{"micro sign folds to mu", "µ", "μ"},
+		{"long s folds to s", "ſ", "s"},
+		{"I with dot above unchanged", "İ", "İ"},
+		// Cherokee folds towards uppercase: the 172-codepoint block
+		// ToLower sent the wrong way.
+		{"cherokee small folds to capital", "ꭰ", "Ꭰ"},
+		{"cherokee capital unchanged", "Ꭰ", "Ꭰ"},
+		{"cherokee small y folds up", "ᏸ", "Ᏸ"},
+		// Greek: final sigma and the symbol variants fold to the base
+		// letter; ToLower leaves them alone.
+		{"final sigma folds to sigma", "ς", "σ"},
+		{"ypogegrammeni folds to iota", "ͅ", "ι"},
+		{"beta symbol folds to beta", "ϐ", "β"},
+		{"theta symbol folds to theta", "ϑ", "θ"},
+		{"prosgegrammeni folds to iota", "ι", "ι"},
+		// Cyrillic Extended-C historic letters fold to the modern ones.
+		{"cyrillic small rounded ve folds", "ᲀ", "в"},
+		{"cyrillic small tall te folds", "ᲄ", "т"},
+		{"cyrillic small tje (16.0) folds", "Ᲊ", "ᲊ"},
+		// Garay, new in Unicode 16.0, absent from Go's 15.0 tables.
+		{"garay capital folds to small", "\U00010D50", "\U00010D70"},
+		// Latin Extended-D additions in 16.0.
+		{"capital rams horn folds", "Ɤ", "ɤ"},
+		{"capital lambda with stroke folds", "Ƛ", "ƛ"},
+		// Ligature: st folds to the long-s variant's target.
+		{"long s t ligature folds", "ﬅ", "ﬆ"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,25 +100,117 @@ func TestCaseFoldingDivergences(t *testing.T) {
 		})
 	}
 
-	// Verify collision: MICRO SIGN and GREEK SMALL MU must fold to same value.
-	micro := String("\u00B5")
-	mu := String("\u03BC")
-	if micro != mu {
-		t.Errorf("MICRO SIGN and MU should collide: %q vs %q", micro, mu)
+	// The whole point: two spellings of one key reach one folded form.
+	for _, pair := range [][2]string{
+		{"µ", "μ"},
+		{"ſ", "s"},
+		{"Σ", "ς"},                   // Σ and final ς
+		{"Ꭰ", "ꭰ"},                   // Cherokee capital and small
+		{"В", "ᲀ"},                   // В and rounded ве
+		{"\U00010D50", "\U00010D70"}, // Garay capital and small
+	} {
+		if String(pair[0]) != String(pair[1]) {
+			t.Errorf("%q and %q should fold together: %q vs %q",
+				pair[0], pair[1], String(pair[0]), String(pair[1]))
+		}
 	}
-
-	// Verify collision: LONG S and LATIN SMALL S must fold to same value.
-	longS := String("\u017F")
-	latinS := String("s")
-	if longS != latinS {
-		t.Errorf("LONG S and s should collide: %q vs %q", longS, latinS)
+	if String("İ") == String("i") {
+		t.Errorf("I with dot above must not collide with i")
 	}
+}
 
-	// Verify non-collision: I-DOT must NOT collide with plain i.
-	iDot := String("\u0130")
-	plainI := String("i")
-	if iDot == plainI {
-		t.Errorf("I-DOT and i should NOT collide but both fold to %q", iDot)
+// TestTableIsComplete checks the generated table against the count the
+// generator recorded from the source file, so a truncated or hand-edited
+// table fails here rather than at a lookup.
+func TestTableIsComplete(t *testing.T) {
+	n := len(caseFoldPairs)
+	for _, rg := range caseFoldRanges {
+		n += int(rg.end-rg.start) + 1
+	}
+	if n != caseFoldMappings {
+		t.Fatalf("table expands to %d mappings, header says %d", n, caseFoldMappings)
+	}
+	for i := 1; i < len(caseFoldRanges); i++ {
+		if caseFoldRanges[i].start <= caseFoldRanges[i-1].end {
+			t.Errorf("ranges not sorted/disjoint at %d", i)
+		}
+	}
+	for i := 1; i < len(caseFoldPairs); i++ {
+		if caseFoldPairs[i].source <= caseFoldPairs[i-1].source {
+			t.Errorf("pairs not sorted at %d", i)
+		}
+	}
+}
+
+// TestFoldIsIdempotentForEveryScalar is the property Simple Case Folding
+// guarantees: a folded codepoint folds to itself. Any table entry whose
+// target is itself a source of a different mapping would break it.
+func TestFoldIsIdempotentForEveryScalar(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		once := Rune(r)
+		if twice := Rune(once); twice != once {
+			t.Fatalf("Rune(%U) = %U, but Rune(%U) = %U", r, once, once, twice)
+		}
+	}
+}
+
+// TestMatchesCaseFoldingTxt checks the table against the Unicode source
+// file itself, for every scalar. It runs only when CASEFOLDING_TXT names
+// a CaseFolding.txt, since the file is not vendored:
+//
+//	CASEFOLDING_TXT=/path/to/CaseFolding.txt go test ./internal/fold
+func TestMatchesCaseFoldingTxt(t *testing.T) {
+	path := os.Getenv("CASEFOLDING_TXT")
+	if path == "" {
+		t.Skip("CASEFOLDING_TXT not set")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	want := map[rune]rune{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		parts := strings.Split(line, ";")
+		if len(parts) < 3 {
+			continue
+		}
+		status := strings.TrimSpace(parts[1])
+		if status != "C" && status != "S" {
+			continue
+		}
+		src, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 16, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dst, err := strconv.ParseUint(strings.TrimSpace(parts[2]), 16, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[rune(src)] = rune(dst)
+	}
+	if len(want) != caseFoldMappings {
+		t.Fatalf("%s has %d C+S rows, table was generated from %d", path, len(want), caseFoldMappings)
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		w, ok := want[r]
+		if !ok {
+			w = r
+		}
+		if got := Rune(r); got != w {
+			t.Errorf("Rune(%U) = %U, CaseFolding.txt says %U", r, got, w)
+		}
 	}
 }
 
@@ -110,6 +230,8 @@ func TestIdempotent(t *testing.T) {
 		"Ωmega",
 		"straße",
 		"İstanbul",
+		"ΟΔΥΣΣΕΎΣ",
+		"Ꭰꭰ",
 	}
 	for _, in := range inputs {
 		once := String(in)
