@@ -54,9 +54,12 @@ type HiveDB struct {
 func Open(name, path string) (*HiveDB, error) {
 	// loregd owns its hive storage: create the database's parent directory if it
 	// is absent (e.g. /var/state/loregd on first boot) so SQLite can create the
-	// file. The DB file itself is created by the driver.
+	// file. Registry hives can contain credentials and other security policy, so
+	// a fallback directory created outside the package-managed image must not be
+	// readable by ordinary processes. The DB file itself is created by the
+	// driver and inherits that protected parent.
 	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create hive directory for %s: %w", name, err)
 		}
 	}

@@ -1,0 +1,56 @@
+.TH LOREGD 8 "September 2026" "Peios" "System Administration"
+.SH NAME
+loregd \- serve local Peios registry hives
+.SH SYNOPSIS
+.B loregd
+.I HiveName=DatabasePath
+.RI [ HiveName=DatabasePath
+\&...]
+.SH DESCRIPTION
+.B loregd
+is the default implementation of the Peios
+.B registryd
+role. It persists each configured registry hive in an SQLite database and
+serves it to the kernel Local Configuration Store over the Registry Source
+Interface.
+.PP
+Each hive argument names a hive and an absolute database path. Hive names are
+case-insensitive but case-preserving. They may not contain a slash, backslash,
+or NUL; the name
+.B CurrentUser
+is reserved by the kernel. Duplicate folded names are rejected.
+.PP
+The service creates a missing database parent directory with mode 0700. It
+enables write-ahead logging, validates the database schema, creates a new root
+key when needed, registers every hive with the kernel, and then enters the
+request loop.
+.SH READINESS
+If
+.B NOTIFY_SOCKET
+is set, loregd sends
+.B READY=1
+after every hive has been opened and registered and immediately before it
+begins serving requests. Failure to send the notification is logged but does
+not terminate the daemon.
+.SH FILES
+.TP
+.B /dev/pkm_registry
+Kernel RSI device used to register hives and exchange requests.
+.TP
+.B /var/state/loregd/Machine.hive
+Default Machine hive path selected by peinit.
+.TP
+.B /var/state/loregd/Users.hive
+Default Users hive path selected by peinit.
+.SH SIGNALS
+.B SIGTERM
+and
+.B SIGINT
+close the kernel device, stop the request loop, and perform a clean shutdown.
+.SH EXIT STATUS
+Zero indicates a clean device close or requested shutdown. A non-zero status
+indicates invalid arguments, storage or schema failure, inability to open or
+register the kernel device, or an unrecoverable request-loop error.
+.SH SEE ALSO
+.BR peinit (8),
+.BR peipkg (1)
