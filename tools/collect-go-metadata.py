@@ -124,9 +124,19 @@ def main() -> int:
             modules.setdefault(module["Path"], (module, source_dir, import_path))
 
     goroot = Path(subprocess.check_output(["go", "env", "GOROOT"], text=True).strip())
-    go_licence = goroot / "LICENSE"
-    if not go_licence.is_file():
-        raise RuntimeError(f"Go toolchain licence is missing: {go_licence}")
+    go_licence = next(
+        (
+            candidate
+            for candidate in (
+                goroot / "LICENSE",
+                Path("/usr/share/licenses/org.golang.go/LICENSE"),
+            )
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if go_licence is None:
+        raise RuntimeError("Go toolchain licence is missing from its recognized package locations")
     copy_unique(go_licence, args.licence_root / "go" / "LICENSE")
     go_patents = goroot / "PATENTS"
     if go_patents.is_file():
