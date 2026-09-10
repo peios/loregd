@@ -1,0 +1,12 @@
+[package]
+name         = "dev.peios.loregd-debugsource"
+architecture = "noarch"
+description  = "Debug sources for the Peios local registry daemon"
+
+[dependencies]
+"dev.peios.loregd-debuginfo" = "= {{version}}-3"
+
+[files]
+"@source:LICENSE"   = "usr/share/licenses/dev.peios.loregd-debugsource/LICENSE"
+":licenses/**"      = "usr/share/licenses/dev.peios.loregd-debugsource/third-party"
+":usr/src/debug/**" = "usr/src/debug"

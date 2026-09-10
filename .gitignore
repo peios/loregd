@@ -16,3 +16,7 @@
 /internal/hivedb/My
 
 /out
+
+# Production builds materialise the go.sum-locked graph in a Pekit stage. Keep
+# an ad-hoc local `go mod vendor` from becoming source-tree payload by accident.
+/vendor

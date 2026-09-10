@@ -45,6 +45,26 @@ func TestOpenCreatesNewDatabase(t *testing.T) {
 	}
 }
 
+func TestOpenProtectsNewHiveDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "state", "loregd")
+	path := filepath.Join(dir, "Machine.hive")
+
+	h, err := Open("Machine", path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat hive directory: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o700); got != want {
+		t.Fatalf("hive directory mode = %04o, want %04o", got, want)
+	}
+}
+
 func TestOpenExistingDatabase(t *testing.T) {
 	path := tempDBPath(t)
 

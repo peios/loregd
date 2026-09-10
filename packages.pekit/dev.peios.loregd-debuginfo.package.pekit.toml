@@ -1,0 +1,11 @@
+[package]
+name        = "dev.peios.loregd-debuginfo"
+description = "Debugging symbols for the Peios local registry daemon"
+
+[dependencies]
+"dev.peios.loregd" = "= {{version}}-3"
+
+[files]
+"@source:LICENSE"         = "usr/share/licenses/dev.peios.loregd-debuginfo/LICENSE"
+":licenses/**"            = "usr/share/licenses/dev.peios.loregd-debuginfo/third-party"
+":debug/usr/lib/debug/**" = "usr/lib/debug"

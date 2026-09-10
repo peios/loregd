@@ -24,14 +24,41 @@ import (
 	"github.com/peios/loregd/internal/rsi"
 )
 
+// infoLog writes ordinary progress to stdout; the standard logger keeps stderr
+// for faults.
+//
+// peinit gives a service one pipe per stream and eventd records `is_error`
+// from which one a line arrived on. Go's standard logger writes to stderr, so
+// with loregd's output finally reaching eventd (rather than being written past
+// it onto the console), every ordinary startup line was being recorded as an
+// error — four false errors in the audit trail on every good boot.
+//
+// Only unambiguous progress belongs here. Anything reporting a fault stays on
+// the standard logger, which is most of internal/handler.
+var infoLog = log.New(os.Stdout, "", log.LstdFlags)
+
 func main() {
-	// Diagnostic: route logs to /dev/console so early-boot failures are visible
-	// on the serial console. peinit captures registryd stdout/stderr to a pipe
-	// it doesn't surface on a Phase-1 readiness failure, so without this loregd
-	// fails silently and looks like a bare notify timeout. Best-effort.
-	if f, err := os.OpenFile("/dev/console", os.O_WRONLY, 0); err == nil {
-		log.SetOutput(f)
-	}
+	// Logs go to stderr, which is where peinit put them.
+	//
+	// This used to open /dev/console and point the logger there, because
+	// peinit gave registryd capture pipes and then never drained them in
+	// Phase 1: a loregd that printed exactly why it could not serve was
+	// reported to the operator as nothing but "registryd readiness timeout
+	// expired before READY=1". Writing to the console fixed the silence and
+	// cost more than it bought — the lines left the pipe, so they never
+	// reached the pre-eventd buffer and eventd never received loregd's
+	// startup output at all. They were also the only untagged lines in an
+	// otherwise formatted boot log.
+	//
+	// peinit now relays whatever registryd printed when Phase 1 fails
+	// (init/linux/registryd.rs, report_registryd_output), so the diagnostic
+	// is back without the console write. On a good boot these lines go where
+	// every other service's output goes: the pre-eventd buffer, then eventd,
+	// where `evctl` can query them.
+	//
+	// Do not reinstate the console redirect without first checking that
+	// peinit still relays. The two changes are ordered, and reversing only
+	// this half restores the silent failure.
 	if err := run(os.Args[1:]); err != nil {
 		log.Fatal(err)
 	}
@@ -70,9 +97,9 @@ func run(args []string) error {
 		}
 
 		regs = append(regs, device.HiveRegistration{Name: h.Name, RootGUID: h.RootGUID})
-		log.Printf("hive %s: root=%x maxseq=%d", h.Name, h.RootGUID, seq)
+		infoLog.Printf("hive %s: root=%x maxseq=%d", h.Name, h.RootGUID, seq)
 	}
-	log.Printf("global max sequence: %d", globalMaxSeq)
+	infoLog.Printf("global max sequence: %d", globalMaxSeq)
 
 	// Wire RSI operation handlers onto a dispatcher.
 	disp := rsi.NewDispatcher()
@@ -89,7 +116,7 @@ func run(args []string) error {
 	if err := device.Register(dev.Fd(), regs, globalMaxSeq); err != nil {
 		return fmt.Errorf("register hives: %w", err)
 	}
-	log.Printf("loregd: registered %d hive(s); entering request loop", len(hives))
+	infoLog.Printf("loregd: registered %d hive(s); entering request loop", len(hives))
 
 	// Signal readiness to the supervisor (peinit's Phase-1 registryd bootstrap
 	// waits for sd_notify READY=1 on $NOTIFY_SOCKET before declaring registryd
@@ -103,7 +130,7 @@ func run(args []string) error {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		sig := <-sigCh
-		log.Printf("loregd: received %s, shutting down", sig)
+		infoLog.Printf("loregd: received %s, shutting down", sig)
 		dev.Close()
 	}()
 
@@ -112,7 +139,7 @@ func run(args []string) error {
 	if err := device.Serve(dev, disp); err != nil {
 		return fmt.Errorf("request loop: %w", err)
 	}
-	log.Printf("loregd: device closed, exiting")
+	infoLog.Printf("loregd: device closed, exiting")
 	return nil
 }
 

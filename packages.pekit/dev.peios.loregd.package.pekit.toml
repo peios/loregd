@@ -1,0 +1,35 @@
+# Loregd is one critical daemon. peinit owns its compiled-in Phase-1 service
+# definition and consumes the registryd claim; this package owns only the
+# implementation, protected mutable-state skeleton, and role target.
+
+[package]
+name        = "dev.peios.loregd"
+description = "Peios local registry source daemon"
+
+[provides]
+loregd    = "{{version}}-3"
+registryd = "1"
+
+# Migrate every unqualified Loregd package published before the production
+# identity. The latest was loregd 0.21.5-2.
+[replaces]
+loregd = "<= 0.21.5-2"
+
+[claims.provides.registryd.binary]
+target = "/usr/sbin/loregd"
+
+# buildmode=pie gives the pure-Go program ASLR while retaining no DT_NEEDED
+# entries. Its ELF interpreter is the glibc loader, so declare that otherwise
+# invisible runtime contract explicitly.
+[dependencies]
+"org.gnu.glibc" = "*"
+
+[files]
+"@source:LICENSE"   = "usr/share/licenses/dev.peios.loregd/LICENSE"
+":licenses/**"      = "usr/share/licenses/dev.peios.loregd/third-party"
+":usr/sbin/loregd"  = "usr/sbin/loregd"
+":usr/share/man/man8/loregd.8.gz" = "usr/share/man/man8/loregd.8.gz"
+":var/state/loregd" = "var/state/loregd"
+
+[sd_overrides]
+"var/state/loregd" = "O:SYG:SYD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)"
