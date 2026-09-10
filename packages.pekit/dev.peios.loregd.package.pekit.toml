@@ -10,13 +10,8 @@ name        = "dev.peios.loregd"
 description = "Peios local registry source daemon"
 
 [provides]
-loregd    = "{{version}}-3"
 registryd = "1"
 
-# Migrate every unqualified Loregd package published before the production
-# identity. The latest was loregd 0.21.5-2.
-[replaces]
-loregd = "<= 0.21.5-2"
 
 [claims.provides.registryd.binary]
 target = "/usr/sbin/loregd"

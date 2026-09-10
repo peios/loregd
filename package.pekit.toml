@@ -20,8 +20,8 @@ format = "peipkg"
 # arrived on, so with these lines finally reaching eventd every good boot was
 # recording four false errors. Faults stay on stderr. PEI-783.
 #
-# -3 is the production-qualified baseline: reverse-DNS identity and bounded
-# migration metadata, a locked vendor-only Go build, complete notices,
+# -3 is the production-qualified baseline: reverse-DNS identity, a locked
+# vendor-only Go build, complete notices,
 # protected state, installed-payload checks, reproducibility, PIE hardening,
 # and conventional source/debug companions.
 version       = "{{version}}-3"
