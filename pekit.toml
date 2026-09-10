@@ -229,6 +229,3 @@ rm -rf "$BUILD" "$GOCACHE"
 golang-go = ">= 2:1.26~"
 dash      = "*"
 coreutils = "*"
-
-[clean]
-command = "rm -rf out"
