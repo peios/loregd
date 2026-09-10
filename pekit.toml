@@ -15,7 +15,22 @@ set -eu
 export GOCACHE="$PEKIT_OUT/gocache"
 export GOMODCACHE="$PEKIT_OUT/modcache"
 export GOENV=off GOWORK=off
-mkdir -p "$GOCACHE" "$GOMODCACHE" "$PEKIT_OUT/vendor"
+SRC=$(pwd -P)
+BUILD="$PEKIT_OUT/source"
+rm -rf "$BUILD" "$PEKIT_OUT/vendor"
+mkdir -p "$GOCACHE" "$GOMODCACHE" "$BUILD" "$PEKIT_OUT/vendor"
+
+# Keep prior package output below src/out from becoming an accidental package
+# in the Go module graph. The vendor phase works from an isolated source copy
+# just like the network-disabled build and test phases.
+for entry in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
+  test -e "$entry" || test -L "$entry" || continue
+  case ${entry##*/} in
+    .git|out) continue ;;
+  esac
+  cp -a "$entry" "$BUILD/"
+done
+cd "$BUILD"
 
 go mod verify
 go mod vendor -o "$PEKIT_OUT/vendor"
@@ -59,13 +74,23 @@ done
 rm -rf "$BUILD"
 mkdir -p "$BUILD" "$PEKIT_OUT/usr/sbin" "$PEKIT_OUT/var/state/loregd"
 chmod 0700 "$PEKIT_OUT/var/state/loregd"
-cp -a "$SRC/." "$BUILD/"
-rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor" "$BUILD/loregd"
+# Pekit's output root may live below the local source checkout. Copy each
+# top-level source entry separately so the build never recurses into its own
+# output, while retaining dotfiles that can affect the Go build.
+for entry in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
+  test -e "$entry" || test -L "$entry" || continue
+  case ${entry##*/} in
+    .git|out) continue ;;
+  esac
+  cp -a "$entry" "$BUILD/"
+done
+rm -rf "$BUILD/vendor" "$BUILD/loregd"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
-export GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off
+export GOENV=off GOTOOLCHAIN=auto GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
 export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOMODCACHE="$PEKIT_VENDOR_OUT/modcache"
 export GOCACHE="$PEKIT_OUT/gocache-a"
 mkdir -p "$GOCACHE"
 
@@ -174,12 +199,19 @@ SRC=$(pwd -P)
 BUILD="$PEKIT_OUT/test-build"
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
-cp -a "$SRC/." "$BUILD/"
-rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor" "$BUILD/loregd"
+for entry in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
+  test -e "$entry" || test -L "$entry" || continue
+  case ${entry##*/} in
+    .git|out) continue ;;
+  esac
+  cp -a "$entry" "$BUILD/"
+done
+rm -rf "$BUILD/vendor" "$BUILD/loregd"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
-export GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off
+export GOENV=off GOTOOLCHAIN=auto GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
 export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOMODCACHE="$PEKIT_VENDOR_OUT/modcache"
 export GOCACHE="$PEKIT_OUT/gocache"
 mkdir -p "$GOCACHE"
 (cd "$BUILD" && go test -count=1 ./...)

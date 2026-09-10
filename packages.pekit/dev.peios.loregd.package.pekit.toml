@@ -2,6 +2,9 @@
 # definition and consumes the registryd claim; this package owns only the
 # implementation, protected mutable-state skeleton, and role target.
 
+# Keep man-db's search index coherent when the service manual is installed.
+side_effects = ["man-db"]
+
 [package]
 name        = "dev.peios.loregd"
 description = "Peios local registry source daemon"
