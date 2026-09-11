@@ -95,7 +95,6 @@ export GOCACHE="$PEKIT_OUT/gocache-a"
 mkdir -p "$GOCACHE"
 
 cd "$BUILD"
-go test -count=1 ./...
 go build -buildmode=pie -ldflags='-B gobuildid -bindnow' \
   -o "$PEKIT_OUT/usr/sbin/loregd" .
 test -x "$PEKIT_OUT/usr/sbin/loregd"
@@ -133,6 +132,67 @@ objcopy --only-keep-debug "$ELF" "$DEBUG"
 strip --strip-unneeded "$ELF"
 objcopy --add-gnu-debuglink="$DEBUG" "$ELF"
 
+rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
+'''
+
+[build.main.dependencies.peipkg]
+"org.golang.go"       = ">= 1.26.5, < 1.27"
+"org.git.kernel.dash" = "*"
+"org.gnu.coreutils"   = "*"
+"org.gnu.diffutils"   = "*"
+"org.gnu.findutils"   = "*"
+"org.gnu.grep"        = "*"
+"org.gnu.sed"         = "*"
+"org.gnu.binutils"    = "*"
+"org.gnu.gzip"        = "*"
+"org.python.python3"  = "*"
+
+[build.main.dependencies.apt]
+golang-go = ">= 2:1.26~"
+dash      = "*"
+coreutils = "*"
+diffutils = "*"
+findutils = "*"
+grep      = "*"
+sed       = "*"
+binutils  = "*"
+gzip      = "*"
+python3   = "*"
+
+[test]
+gate = true
+needs = ["main"]
+command = '''
+set -eu
+SRC=$(pwd -P)
+BUILD="$PEKIT_OUT/test-build"
+rm -rf "$BUILD"
+mkdir -p "$BUILD"
+for entry in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
+  test -e "$entry" || test -L "$entry" || continue
+  case ${entry##*/} in
+    .git|out) continue ;;
+  esac
+  cp -a "$entry" "$BUILD/"
+done
+rm -rf "$BUILD/vendor" "$BUILD/loregd"
+cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
+export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
+export GOENV=off GOTOOLCHAIN=auto GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
+export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOMODCACHE="$PEKIT_VENDOR_OUT/modcache"
+export GOCACHE="$PEKIT_OUT/gocache"
+mkdir -p "$GOCACHE"
+(cd "$BUILD" && go test -count=1 ./...)
+rm -rf "$BUILD" "$GOCACHE"
+
+# Validate the exact staged package output produced by build.main.
+SRC=$(pwd -P)
+PEKIT_OUT="$PEKIT_MAIN_OUT"
+BUILD="$PEKIT_OUT/build"
+ELF="$PEKIT_OUT/usr/sbin/loregd"
+BUILD_ID=$(readelf -n "$ELF" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+DEBUG="$PEKIT_OUT/usr/lib/debug/.build-id/$(printf %s "$BUILD_ID" | cut -c1-2)/$(printf %s "$BUILD_ID" | cut -c3-).debug"
 # Installed-payload smoke tests: the shipped executable runs, rejects an empty
 # command line cleanly, and the package-owned mutable-state skeleton is private.
 if "$ELF" >"$PEKIT_OUT/no-args.stdout" 2>"$PEKIT_OUT/no-args.stderr"; then
@@ -166,10 +226,9 @@ for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
   ! grep -aF "$forbidden" "$ELF" "$DEBUG" >/dev/null
 done
 
-rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
 '''
 
-[build.main.dependencies.peipkg]
+[test.dependencies.peipkg]
 "org.golang.go"       = ">= 1.26.5, < 1.27"
 "org.git.kernel.dash" = "*"
 "org.gnu.coreutils"   = "*"
@@ -181,7 +240,7 @@ rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
 "org.gnu.gzip"        = "*"
 "org.python.python3"  = "*"
 
-[build.main.dependencies.apt]
+[test.dependencies.apt]
 golang-go = ">= 2:1.26~"
 dash      = "*"
 coreutils = "*"
@@ -192,40 +251,3 @@ sed       = "*"
 binutils  = "*"
 gzip      = "*"
 python3   = "*"
-
-[test]
-needs = ["vendor"]
-command = '''
-set -eu
-SRC=$(pwd -P)
-BUILD="$PEKIT_OUT/test-build"
-rm -rf "$BUILD"
-mkdir -p "$BUILD"
-for entry in "$SRC"/* "$SRC"/.[!.]* "$SRC"/..?*; do
-  test -e "$entry" || test -L "$entry" || continue
-  case ${entry##*/} in
-    .git|out) continue ;;
-  esac
-  cp -a "$entry" "$BUILD/"
-done
-rm -rf "$BUILD/vendor" "$BUILD/loregd"
-cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
-export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
-export GOENV=off GOTOOLCHAIN=auto GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
-export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
-export GOMODCACHE="$PEKIT_VENDOR_OUT/modcache"
-export GOCACHE="$PEKIT_OUT/gocache"
-mkdir -p "$GOCACHE"
-(cd "$BUILD" && go test -count=1 ./...)
-rm -rf "$BUILD" "$GOCACHE"
-'''
-
-[test.dependencies.peipkg]
-"org.golang.go"       = ">= 1.26.5, < 1.27"
-"org.git.kernel.dash" = "*"
-"org.gnu.coreutils"   = "*"
-
-[test.dependencies.apt]
-golang-go = ">= 2:1.26~"
-dash      = "*"
-coreutils = "*"
