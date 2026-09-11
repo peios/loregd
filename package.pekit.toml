@@ -11,7 +11,7 @@ format = "peipkg"
 # buffer and then eventd instead of being written past it onto the console.
 #
 # ORDERING: requires a peinit that relays registryd's captured output when
-# Phase 1 fails (peinit 0.0.1-42, report_registryd_output). Shipping this
+# Phase 1 fails (peinit 0.0.1-1, report_registryd_output). Shipping this
 # against an older peinit restores the failure mode the redirect existed to
 # prevent — a loregd that cannot serve reported only as a readiness timeout.
 #
@@ -24,7 +24,7 @@ format = "peipkg"
 # vendor-only Go build, complete notices,
 # protected state, installed-payload checks, reproducibility, PIE hardening,
 # and conventional source/debug companions.
-version       = "{{version}}-3"
+version       = "{{version}}-1"
 architecture  = "x86_64"
 license       = "MIT AND BSD-2-Clause AND BSD-3-Clause"
 license_class = "free"
