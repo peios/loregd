@@ -487,6 +487,162 @@ func TestEnumChildrenMultiple(t *testing.T) {
 	}
 }
 
+// decodeEnumChildrenWire returns the child names, the GUID-typed path targets
+// they reference, and the metadata GUIDs carried alongside them.
+func decodeEnumChildrenWire(t *testing.T, payload []byte) (names []string, targets, metaGUIDs []rsi.GUID) {
+	t.Helper()
+	d := rsi.NewDecoder(payload)
+	childCount, err := d.Uint32()
+	if err != nil {
+		t.Fatalf("decode child count: %v", err)
+	}
+	for i := uint32(0); i < childCount; i++ {
+		name, err := d.String()
+		if err != nil {
+			t.Fatalf("decode child name: %v", err)
+		}
+		names = append(names, name)
+		entryCount, err := d.Uint32()
+		if err != nil {
+			t.Fatalf("decode entry count: %v", err)
+		}
+		for j := uint32(0); j < entryCount; j++ {
+			if _, err := d.String(); err != nil {
+				t.Fatalf("decode layer: %v", err)
+			}
+			targetType, err := d.Uint8()
+			if err != nil {
+				t.Fatalf("decode target type: %v", err)
+			}
+			guid, err := d.GUID()
+			if err != nil {
+				t.Fatalf("decode target guid: %v", err)
+			}
+			if _, err := d.Uint64(); err != nil {
+				t.Fatalf("decode sequence: %v", err)
+			}
+			if targetType == rsi.TargetGUID {
+				targets = append(targets, guid)
+			}
+		}
+	}
+	metaCount, err := d.Uint32()
+	if err != nil {
+		t.Fatalf("decode meta count: %v", err)
+	}
+	for i := uint32(0); i < metaCount; i++ {
+		guid, err := d.GUID()
+		if err != nil {
+			t.Fatalf("decode meta guid: %v", err)
+		}
+		if _, err := d.Blob(); err != nil {
+			t.Fatalf("decode meta sd: %v", err)
+		}
+		if _, err := d.Bool(); err != nil {
+			t.Fatalf("decode meta volatile: %v", err)
+		}
+		if _, err := d.Bool(); err != nil {
+			t.Fatalf("decode meta symlink: %v", err)
+		}
+		if _, err := d.Uint64(); err != nil {
+			t.Fatalf("decode meta last write time: %v", err)
+		}
+		metaGUIDs = append(metaGUIDs, guid)
+	}
+	return names, targets, metaGUIDs
+}
+
+// assertEnumMetadataCorresponds checks what the kernel checks of an
+// RSI_ENUM_CHILDREN response: every GUID-typed path entry has a metadata block,
+// and every metadata block is referenced by one. Either direction failing sets
+// malformed_source_data and tears the source down, so dropping an entry must
+// drop its metadata with it — and must not strand metadata behind.
+func assertEnumMetadataCorresponds(t *testing.T, targets, meta []rsi.GUID) {
+	t.Helper()
+	have := make(map[rsi.GUID]bool, len(meta))
+	for _, g := range meta {
+		have[g] = true
+	}
+	for _, g := range targets {
+		if !have[g] {
+			t.Errorf("path entry targets %x with no metadata block", g)
+		}
+	}
+	referenced := make(map[rsi.GUID]bool, len(targets))
+	for _, g := range targets {
+		referenced[g] = true
+	}
+	for _, g := range meta {
+		if !referenced[g] {
+			t.Errorf("metadata block %x is referenced by no path entry", g)
+		}
+	}
+}
+
+// An enumeration lands in the same create window a lookup can: LCS writes the
+// path entry before the key row, so a parent enumerated between the two holds
+// an entry whose target key does not exist yet. That must read as absent
+// rather than fail the whole enumeration with a storage error (PEI-233).
+func TestEnumChildrenSkipsChildWhoseKeyIsNotYetVisible(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+	visible := rsi.GUID{0xa1}
+	pending := rsi.GUID{0xa2}
+
+	insertKey(t, hive, visible, "Alpha", root, false)
+	insertPathEntry(t, hive, root, "Alpha", "base", visible, 1)
+	// The entry is written; its key row is not, as during a create.
+	insertPathEntry(t, hive, root, "Bravo", "base", pending, 2)
+
+	status, payload := h.handleEnumChildren(rsi.RequestHeader{}, encodeEnumChildren(root))
+	if status != rsi.StatusOK {
+		t.Fatalf("status = %d, want OK — a key row that is not there yet is not a storage fault", status)
+	}
+	names, targets, meta := decodeEnumChildrenWire(t, payload)
+	if len(names) != 1 || names[0] != "Alpha" {
+		t.Fatalf("children = %v, want [Alpha]: the pending child drops entirely", names)
+	}
+	assertEnumMetadataCorresponds(t, targets, meta)
+
+	// Once the key row lands, the child enumerates normally.
+	insertKey(t, hive, pending, "Bravo", root, false)
+	status, payload = h.handleEnumChildren(rsi.RequestHeader{}, encodeEnumChildren(root))
+	if status != rsi.StatusOK {
+		t.Fatalf("status after key insert = %d, want OK", status)
+	}
+	names, targets, meta = decodeEnumChildrenWire(t, payload)
+	if len(names) != 2 || names[0] != "Alpha" || names[1] != "Bravo" {
+		t.Fatalf("children after key insert = %v, want [Alpha Bravo]", names)
+	}
+	assertEnumMetadataCorresponds(t, targets, meta)
+}
+
+// A child named in two layers where only one target is pending keeps the entry
+// that resolves. Dropping the whole child would hide a key that is there.
+func TestEnumChildrenDropsOnlyTheDanglingLayerEntry(t *testing.T) {
+	h, hive := testHandler(t)
+	root := rsi.GUID(hive.RootGUID)
+	base := rsi.GUID{0xb1}
+	pending := rsi.GUID{0xb2}
+
+	insertKey(t, hive, base, "Init", root, false)
+	insertPathEntry(t, hive, root, "Init", "base", base, 1)
+	insertPathEntry(t, hive, root, "Init", "vendor", pending, 2)
+
+	status, payload := h.handleEnumChildren(rsi.RequestHeader{}, encodeEnumChildren(root))
+	if status != rsi.StatusOK {
+		t.Fatalf("status = %d, want OK", status)
+	}
+	names, targets, meta := decodeEnumChildrenWire(t, payload)
+	if len(names) != 1 || names[0] != "Init" {
+		t.Fatalf("children = %v, want [Init]", names)
+	}
+	if len(targets) != 1 || targets[0] != base {
+		t.Fatalf("targets = %x, want only the resolvable %x", targets, base)
+	}
+	assertEnumMetadataCorresponds(t, targets, meta)
+}
+
 // decodeEnumChildNames extracts just the child names from an RSI_ENUM_CHILDREN
 // response payload, in wire order.
 func decodeEnumChildNames(t *testing.T, payload []byte) []string {

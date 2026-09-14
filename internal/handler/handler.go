@@ -599,14 +599,51 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 		})
 	}
 
+	// The window RSI_LOOKUP already tolerates reaches enumeration too: LCS
+	// creates a key as create-entry then create-key outside any transaction,
+	// so a parent enumerated between the two holds an entry whose key row
+	// does not exist yet. Failing the request reported a storage fault where
+	// the storage is fine, and left the caller unable to tell a transient
+	// race from real corruption.
+	//
+	// The entry cannot simply be emitted without its metadata: the kernel
+	// rejects a GUID-typed entry whose metadata block is missing *and* a
+	// metadata block nothing references, tearing the source down either way
+	// (validate_rsi_enum_children_metadata_completeness). So the entry is
+	// dropped, exactly as on lookup, and a child left holding no entries at
+	// all drops with it — the child reads as absent, which is what it was a
+	// moment earlier (PEI-233).
 	var meta []rsi.LookupKeyMeta
+	dangling := make(map[rsi.GUID]bool)
 	for _, guid := range sortedGUIDs(guidSet) {
 		m, err := readKeyMeta(db, guid)
+		if errors.Is(err, sql.ErrNoRows) {
+			dangling[guid] = true
+			continue
+		}
 		if err != nil {
 			log.Printf("enum children meta error for %x: %v", guid, err)
 			return rsi.StatusStorageError, nil
 		}
 		meta = append(meta, m)
+	}
+	if len(dangling) > 0 {
+		kept := children[:0]
+		for _, ch := range children {
+			entries := ch.Entries[:0]
+			for _, e := range ch.Entries {
+				if e.TargetType == rsi.TargetGUID && dangling[e.TargetGUID] {
+					continue
+				}
+				entries = append(entries, e)
+			}
+			if len(entries) == 0 {
+				continue
+			}
+			ch.Entries = entries
+			kept = append(kept, ch)
+		}
+		children = kept
 	}
 
 	enc := rsi.NewEncoder(512)
