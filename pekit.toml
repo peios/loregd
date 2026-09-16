@@ -14,7 +14,9 @@ command = '''
 set -eu
 export GOCACHE="$PEKIT_OUT/gocache"
 export GOMODCACHE="$PEKIT_OUT/modcache"
-export GOENV=off GOWORK=off
+# The network is open here, so GOTOOLCHAIN=local is what stops a go.mod bump
+# from silently fetching a compiler other than the declared org.golang.go.
+export GOENV=off GOWORK=off GOTOOLCHAIN=local
 SRC=$(pwd -P)
 BUILD="$PEKIT_OUT/source"
 rm -rf "$BUILD" "$PEKIT_OUT/vendor"
@@ -88,7 +90,7 @@ rm -rf "$BUILD/vendor" "$BUILD/loregd"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
-export GOENV=off GOTOOLCHAIN=auto GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
+export GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
 export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
 export GOMODCACHE="$PEKIT_VENDOR_OUT/modcache"
 export GOCACHE="$PEKIT_OUT/gocache-a"
@@ -178,7 +180,7 @@ done
 rm -rf "$BUILD/vendor" "$BUILD/loregd"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
-export GOENV=off GOTOOLCHAIN=auto GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
+export GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=sum.golang.org
 export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
 export GOMODCACHE="$PEKIT_VENDOR_OUT/modcache"
 export GOCACHE="$PEKIT_OUT/gocache"
