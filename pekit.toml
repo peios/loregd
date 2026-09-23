@@ -45,12 +45,6 @@ test -s "$PEKIT_OUT/vendor/modules.txt"
 "org.git.kernel.dash"         = "*"
 "org.gnu.coreutils"           = "*"
 
-[build.vendor.dependencies.apt]
-golang-go       = ">= 2:1.26~"
-ca-certificates = "*"
-dash            = "*"
-coreutils       = "*"
-
 [build.main]
 needs = ["vendor"]
 command = '''
@@ -149,18 +143,6 @@ rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
 "org.gnu.gzip"        = "*"
 "org.python.python3"  = "*"
 
-[build.main.dependencies.apt]
-golang-go = ">= 2:1.26~"
-dash      = "*"
-coreutils = "*"
-diffutils = "*"
-findutils = "*"
-grep      = "*"
-sed       = "*"
-binutils  = "*"
-gzip      = "*"
-python3   = "*"
-
 [test]
 gate = true
 needs = ["main", "vendor"]
@@ -241,15 +223,3 @@ done
 "org.gnu.binutils"    = "*"
 "org.gnu.gzip"        = "*"
 "org.python.python3"  = "*"
-
-[test.dependencies.apt]
-golang-go = ">= 2:1.26~"
-dash      = "*"
-coreutils = "*"
-diffutils = "*"
-findutils = "*"
-grep      = "*"
-sed       = "*"
-binutils  = "*"
-gzip      = "*"
-python3   = "*"
