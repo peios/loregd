@@ -40,10 +40,12 @@ test -s "$PEKIT_OUT/vendor/modules.txt"
 '''
 
 [build.vendor.dependencies.peipkg]
-"org.golang.go"               = ">= 1.26.5, < 1.27"
+"org.golang.go"               = ">= 1.26.5"
 "org.mozilla.ca-certificates" = "*"
 "org.git.kernel.dash"         = "*"
-"org.gnu.coreutils"           = "*"
+"dev.peios.peiosutils"        = "*"
+# GNU cp -a for the isolated source copy.
+"org.gnu.coreutils-build-compat" = "*"
 
 [build.main]
 needs = ["vendor"]
@@ -132,9 +134,12 @@ rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
 '''
 
 [build.main.dependencies.peipkg]
-"org.golang.go"       = ">= 1.26.5, < 1.27"
+"org.golang.go"       = ">= 1.26.5"
 "org.git.kernel.dash" = "*"
-"org.gnu.coreutils"   = "*"
+"dev.peios.peiosutils" = "*"
+# GNU cp -a for the isolated source copy; chmod and stat -c for the protected
+# state directory.
+"org.gnu.coreutils-build-compat" = "*"
 "org.gnu.diffutils"   = "*"
 "org.gnu.findutils"   = "*"
 "org.gnu.grep"        = "*"
@@ -195,27 +200,45 @@ rm -f "$PEKIT_OUT/no-args.stdout" "$PEKIT_OUT/no-args.stderr"
 readelf -h "$ELF" | grep -Eq 'Type:[[:space:]]+DYN'
 readelf -lW "$ELF" | grep -q 'GNU_RELRO'
 readelf -lW "$ELF" | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
-! readelf -lW "$ELF" | grep -Eq 'GNU_STACK[[:space:]].*RWE'
+if readelf -lW "$ELF" | grep -Eq 'GNU_STACK[[:space:]].*RWE'; then
+  echo "loregd: executable stack" >&2
+  exit 1
+fi
 readelf -dW "$ELF" | grep -q 'BIND_NOW'
 readelf -dW "$ELF" | grep -Eq 'FLAGS_1.*PIE'
-! readelf -dW "$ELF" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH|TEXTREL)'
-! readelf -SW "$ELF" | grep -q '\.debug_info'
-! readelf -SW "$ELF" | grep -q '\.symtab'
+if readelf -dW "$ELF" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH|TEXTREL)'; then
+  echo "loregd: forbidden dynamic tag or shared-library dependency" >&2
+  exit 1
+fi
+if readelf -SW "$ELF" | grep -q '\.debug_info'; then
+  echo "loregd: unsplit debug information" >&2
+  exit 1
+fi
+if readelf -SW "$ELF" | grep -q '\.symtab'; then
+  echo "loregd: unstripped symbol table" >&2
+  exit 1
+fi
 test -s "$DEBUG"
 readelf -SW "$DEBUG" | grep -q '\.debug_info'
 test "$(readelf -n "$DEBUG" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$BUILD_ID"
 go version -m "$ELF" | grep -Eq '^[[:space:]]*path[[:space:]]+github\.com/peios/loregd$'
 go version -m "$ELF" | grep -Eq '^[[:space:]]*dep[[:space:]]+modernc\.org/sqlite[[:space:]]+v1\.48\.1'
 for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
-  ! grep -aF "$forbidden" "$ELF" "$DEBUG" >/dev/null
+  if grep -aqF "$forbidden" "$ELF" "$DEBUG"; then
+    echo "loregd: build path leaked into payload: $forbidden" >&2
+    exit 1
+  fi
 done
 
 '''
 
 [test.dependencies.peipkg]
-"org.golang.go"       = ">= 1.26.5, < 1.27"
+"org.golang.go"       = ">= 1.26.5"
 "org.git.kernel.dash" = "*"
-"org.gnu.coreutils"   = "*"
+"dev.peios.peiosutils" = "*"
+# GNU cp -a for the isolated source copy; chmod and stat -c for the protected
+# state directory.
+"org.gnu.coreutils-build-compat" = "*"
 "org.gnu.diffutils"   = "*"
 "org.gnu.findutils"   = "*"
 "org.gnu.grep"        = "*"

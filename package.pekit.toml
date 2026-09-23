@@ -6,24 +6,6 @@
 format = "peipkg"
 
 [package]
-# -2: the /dev/console redirect comes out. loregd's logs go to stderr, which
-# peinit captures like any other service's, so they reach the pre-eventd
-# buffer and then eventd instead of being written past it onto the console.
-#
-# ORDERING: requires a peinit that relays registryd's captured output when
-# Phase 1 fails (peinit 0.0.1-1, report_registryd_output). Shipping this
-# against an older peinit restores the failure mode the redirect existed to
-# prevent — a loregd that cannot serve reported only as a readiness timeout.
-#
-# Also: ordinary progress moves to stdout via a second logger. Go's standard
-# logger writes to stderr and eventd records is_error from the stream a line
-# arrived on, so with these lines finally reaching eventd every good boot was
-# recording four false errors. Faults stay on stderr. PEI-783.
-#
-# -3 is the production-qualified baseline: reverse-DNS identity, a locked
-# vendor-only Go build, complete notices,
-# protected state, installed-payload checks, reproducibility, PIE hardening,
-# and conventional source/debug companions.
 version       = "{{version}}-1"
 architecture  = "x86_64"
 license       = "MIT AND BSD-2-Clause AND BSD-3-Clause"
