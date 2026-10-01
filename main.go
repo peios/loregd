@@ -113,8 +113,23 @@ func run(args []string) error {
 	defer dev.Close()
 
 	// Step 9: register all hives, root GUIDs, and the global max sequence.
-	if err := device.Register(dev.Fd(), regs, globalMaxSeq); err != nil {
+	// Through Control rather than dev.Fd(): Fd puts the file in blocking
+	// mode, and a request loop blocked in read() is not woken by the Close
+	// below, so loregd outlived every SIGTERM until its stop timeout killed
+	// it (PEI-1216). Kept in the runtime poller, the read returns once the
+	// file is closed.
+	raw, err := dev.SyscallConn()
+	if err != nil {
 		return fmt.Errorf("register hives: %w", err)
+	}
+	var registerErr error
+	if err := raw.Control(func(fd uintptr) {
+		registerErr = device.Register(fd, regs, globalMaxSeq)
+	}); err != nil {
+		return fmt.Errorf("register hives: %w", err)
+	}
+	if registerErr != nil {
+		return fmt.Errorf("register hives: %w", registerErr)
 	}
 	infoLog.Printf("loregd: registered %d hive(s); entering request loop", len(hives))
 

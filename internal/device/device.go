@@ -119,8 +119,9 @@ func Register(fd uintptr, hives []HiveRegistration, maxSequence uint64) error {
 // written with a single Write (one write() = one response).
 //
 // Serve blocks until the device returns an error: io.EOF on LCS
-// shutdown / fd close (returned as nil), or a malformed-framing /
-// I/O error (returned as the error, which tears the loop down).
+// shutdown, or os.ErrClosed once loregd closes the device itself on
+// SIGTERM (both returned as nil), or a malformed-framing / I/O error
+// (returned as the error, which tears the loop down).
 func Serve(rw io.ReadWriter, d *rsi.Dispatcher) error {
 	// Drain in-flight requests before returning so no handler writes to a
 	// device or database that shutdown is about to close.
@@ -135,7 +136,7 @@ func Serve(rw io.ReadWriter, d *rsi.Dispatcher) error {
 	for {
 		n, err := rw.Read(buf)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
 				return nil
 			}
 			return fmt.Errorf("read request: %w", err)

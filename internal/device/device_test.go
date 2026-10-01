@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/peios/loregd/internal/rsi"
 )
@@ -148,5 +150,29 @@ func TestServeCleanEOF(t *testing.T) {
 	disp := rsi.NewDispatcher()
 	if err := Serve(conn, disp); err != nil {
 		t.Fatalf("Serve on clean EOF = %v, want nil", err)
+	}
+}
+
+// TestServeEndsWhenTheFileIsClosed verifies the SIGTERM path: loregd closes
+// the device while the loop waits in Read, and Serve returns nil at once
+// (PEI-1216). A pipe stands in for the device: both are pollable, so a
+// Read parked in the runtime poller is woken by Close.
+func TestServeEndsWhenTheFileIsClosed(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	done := make(chan error, 1)
+	go func() { done <- Serve(&rw{r: r}, rsi.NewDispatcher()) }()
+	time.Sleep(50 * time.Millisecond)
+	r.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve after Close = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve still waiting in Read after Close")
 	}
 }
