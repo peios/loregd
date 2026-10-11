@@ -160,10 +160,12 @@ func (d *Decoder) Blob() ([]byte, error) {
 
 // RequestHeader is the common header for all RSI requests.
 type RequestHeader struct {
-	TotalLen  uint32
-	RequestID uint64
-	OpCode    uint16
-	TxnID     uint64
+	// Negotiated out-of-band metadata, not part of the RSI data frame.
+	Session, DeadlineNS, LifetimeNS, LeaseNS uint64
+	TotalLen                                 uint32
+	RequestID                                uint64
+	OpCode                                   uint16
+	TxnID                                    uint64
 }
 
 // ReadRequestHeader reads a complete request from a reader.

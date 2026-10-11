@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -25,6 +26,7 @@ func testHandler(t *testing.T) (*Handler, *hivedb.HiveDB) {
 	t.Helper()
 	hive := openTestHive(t, "Machine")
 	h := New([]*hivedb.HiveDB{hive})
+	t.Cleanup(h.Close)
 	return h, hive
 }
 
@@ -948,7 +950,7 @@ func TestDropKeyInTransaction(t *testing.T) {
 	}
 
 	// Commit.
-	h.txns.commit(50)
+	h.txns.commit(context.Background(), 50)
 
 	// Key should be gone.
 	var count int

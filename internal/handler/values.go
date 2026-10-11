@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"log"
@@ -18,13 +17,18 @@ func (h *Handler) registerValueHandlers(d *rsi.Dispatcher) {
 	d.Register(rsi.OpSetBlanketTombstone, h.handleSetBlanketTombstone)
 }
 
-func (h *Handler) handleQueryValues(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleQueryValues(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeQueryValuesRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHive", req.GUID)
 	if !ok {
 		return st, nil
 	}
@@ -37,13 +41,13 @@ func (h *Handler) handleQueryValues(hdr rsi.RequestHeader, payload []byte) (uint
 	entries, err := queryValueEntries(db, req)
 	if err != nil {
 		log.Printf("query values error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	blankets, err := queryBlanketTombstones(db, req.GUID)
 	if err != nil {
 		log.Printf("query blanket tombstones error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	enc := rsi.NewEncoder(256)
@@ -153,13 +157,18 @@ func queryBlanketTombstones(db Querier, guid rsi.GUID) ([]rsi.BlanketTombstoneEn
 	return blankets, nil
 }
 
-func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleSetValue(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeSetValueRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHive", req.GUID)
 	if !ok {
 		return st, nil
 	}
@@ -178,7 +187,7 @@ func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32,
 	}
 	if volErr != nil {
 		log.Printf("set value isVolatile: %v", volErr)
-		return rsi.StatusStorageError, nil
+		return storageStatus(volErr), nil
 	}
 	if vol {
 		table = "volatile.[values]"
@@ -191,13 +200,19 @@ func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32,
 		if hdr.TxnID == 0 {
 			// Use BEGIN IMMEDIATE for CAS atomicity; a deferred
 			// BEGIN would allow concurrent writers between SELECT and INSERT.
-			ctx := context.Background()
+			ctx := hdr.ctx
 			conn, connErr := hive.WriteDB().Conn(ctx)
 			if connErr != nil {
 				log.Printf("set value CAS conn: %v", connErr)
-				return rsi.StatusStorageError, nil
+				return storageStatus(connErr), nil
 			}
 			defer conn.Close()
+			committed := false
+			defer func() {
+				if !committed {
+					rollbackConn(conn)
+				}
+			}()
 
 			_, connErr = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
 			if connErr != nil {
@@ -205,34 +220,32 @@ func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32,
 					return rsi.StatusTxnBusy, nil
 				}
 				log.Printf("set value CAS begin: %v", connErr)
-				return rsi.StatusStorageError, nil
+				return storageStatus(connErr), nil
 			}
 
 			var currentSeq uint64
 			err = conn.QueryRowContext(ctx, `SELECT sequence FROM `+table+` WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
 				req.GUID[:], foldedName, req.LayerName).Scan(&currentSeq)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && currentSeq != req.ExpectedSequence) {
-				conn.ExecContext(ctx, "ROLLBACK")
 				return rsi.StatusCASFailed, nil
 			}
 			if err != nil {
-				conn.ExecContext(ctx, "ROLLBACK")
 				log.Printf("set value CAS check: %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
 
 			_, err = conn.ExecContext(ctx, `INSERT OR REPLACE INTO `+table+` (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
 			if err != nil {
-				conn.ExecContext(ctx, "ROLLBACK")
 				log.Printf("set value CAS write: %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
-			_, err = conn.ExecContext(ctx, "COMMIT")
+			err = commitConn(ctx, conn)
 			if err != nil {
 				log.Printf("set value CAS commit: %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
+			committed = true
 		} else {
 			// Within RSI transaction; already on the pinned connection.
 			var currentSeq uint64
@@ -243,14 +256,14 @@ func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32,
 			}
 			if err != nil {
 				log.Printf("set value CAS check: %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
 
 			_, err = wq.Exec(`INSERT OR REPLACE INTO `+table+` (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
 			if err != nil {
 				log.Printf("set value CAS write: %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
 		}
 		return rsi.StatusOK, nil
@@ -261,19 +274,24 @@ func (h *Handler) handleSetValue(hdr rsi.RequestHeader, payload []byte) (uint32,
 		req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
 	if err != nil {
 		log.Printf("set value error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleDeleteValueEntry(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleDeleteValueEntry(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeDeleteValueEntryRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHive", req.GUID)
 	if !ok {
 		return st, nil
 	}
@@ -288,24 +306,29 @@ func (h *Handler) handleDeleteValueEntry(hdr rsi.RequestHeader, payload []byte) 
 	if _, err := wq.Exec(`DELETE FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
 		req.GUID[:], foldedName, req.LayerName); err != nil {
 		log.Printf("delete value entry (main): %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	if _, err := wq.Exec(`DELETE FROM volatile.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
 		req.GUID[:], foldedName, req.LayerName); err != nil {
 		log.Printf("delete value entry (volatile): %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleSetBlanketTombstone(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleSetBlanketTombstone(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeSetBlanketTombstoneRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHive", req.GUID)
 	if !ok {
 		return st, nil
 	}
@@ -322,7 +345,7 @@ func (h *Handler) handleSetBlanketTombstone(hdr rsi.RequestHeader, payload []byt
 	}
 	if volErr != nil {
 		log.Printf("blanket tombstone isVolatile: %v", volErr)
-		return rsi.StatusStorageError, nil
+		return storageStatus(volErr), nil
 	}
 	if vol {
 		table = "volatile.blanket_tombstones"
@@ -338,7 +361,7 @@ func (h *Handler) handleSetBlanketTombstone(hdr rsi.RequestHeader, payload []byt
 
 	if err != nil {
 		log.Printf("blanket tombstone error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil

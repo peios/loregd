@@ -8,6 +8,7 @@ package hivedb
 // startup-sequence}.test.lua via covered_by. PEI-1121.
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
@@ -161,7 +162,7 @@ func TestEachSQLHandleHasOneConnection(t *testing.T) {
 			t.Errorf("read handle MaxOpenConnections = %d, want 1", got)
 		}
 	}
-	snap, err := h.OpenSnapshotConn()
+	snap, err := h.OpenSnapshotConn(context.Background())
 	if err != nil {
 		t.Fatalf("OpenSnapshotConn: %v", err)
 	}

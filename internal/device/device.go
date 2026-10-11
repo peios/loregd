@@ -123,6 +123,10 @@ func Register(fd uintptr, hives []HiveRegistration, maxSequence uint64) error {
 // SIGTERM (both returned as nil), or a malformed-framing / I/O error
 // (returned as the error, which tears the loop down).
 func Serve(rw io.ReadWriter, d *rsi.Dispatcher) error {
+	return ServeWithLifetime(rw, d, nil)
+}
+
+func ServeWithLifetime(rw io.ReadWriter, d *rsi.Dispatcher, lifetime *Lifetime) error {
 	// Drain in-flight requests before returning so no handler writes to a
 	// device or database that shutdown is about to close.
 	var wg sync.WaitGroup
@@ -152,6 +156,17 @@ func Serve(rw io.ReadWriter, d *rsi.Dispatcher) error {
 			return fmt.Errorf("malformed request framing: %w", perr)
 		}
 
+		if lifetime != nil {
+			if err := lifetime.Context(&hdr); err != nil {
+				return fmt.Errorf("request lifetime: %w", err)
+			}
+		}
+		// BEGIN only allocates bookkeeping. Keep it ordered with subsequent
+		// operations/ABORT, even when the creating caller already detached.
+		if hdr.OpCode == rsi.OpBeginTransaction {
+			d.Dispatch(rw, hdr, payload)
+			continue
+		}
 		wg.Go(func() {
 			d.Dispatch(rw, hdr, payload)
 		})

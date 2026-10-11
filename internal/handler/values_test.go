@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"testing"
 
 	"github.com/peios/loregd/internal/fold"
@@ -330,7 +331,7 @@ func TestSetValueCASInTransaction(t *testing.T) {
 		t.Errorf("CAS mismatch in txn: status = %d, want CASFailed", status)
 	}
 
-	h.txns.commit(60)
+	h.txns.commit(context.Background(), 60)
 
 	// Verify the committed value.
 	var data []byte
