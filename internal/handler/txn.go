@@ -3,13 +3,15 @@ package handler
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
-	"log"
-	"strings"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 	"sync"
 
 	"github.com/peios/loregd/internal/hivedb"
+	"github.com/peios/loregd/internal/rsi"
 )
 
 // errReadOnlyTxn is returned when a mutating operation is tagged with a
@@ -19,11 +21,15 @@ var errReadOnlyTxn = errors.New("mutating operation on read-only transaction")
 
 // txnInfo tracks state for one active RSI transaction.
 type txnInfo struct {
-	hive    *hivedb.HiveDB // nil = unbound (no operation has bound a connection yet)
-	conn    *sql.Conn      // pinned connection (write conn for RW, snapshot conn for RO)
-	querier *connQuerier   // wraps conn for Querier interface
-	binding bool           // true while bind is in progress (prevents double-bind)
+	session, lease, lifetime uint64
+	expired                  bool
+	cleanupStarted           bool
+	hive                     *hivedb.HiveDB // nil = unbound (no operation has bound a connection yet)
+	conn                     *sql.Conn      // pinned connection (write conn for RW, snapshot conn for RO)
+	operation                hivedb.Gate
+	binding                  bool // true while bind is in progress (prevents double-bind)
 
+	failed     bool    // interrupted operation; only abort may release this ID
 	readOnly   bool    // RSI_TXN_READ_ONLY: snapshot reads, mutations rejected
 	snapshotDB *sql.DB // dedicated DB backing a read-only snapshot conn (nil for RW)
 
@@ -36,6 +42,8 @@ type txnInfo struct {
 type txnManager struct {
 	mu   sync.Mutex
 	txns map[uint64]*txnInfo
+	stop chan struct{}
+	done chan struct{}
 }
 
 func newTxnManager() *txnManager {
@@ -64,7 +72,7 @@ func (m *txnManager) beginMode(txnID uint64, readOnly bool) error {
 // hive on the first mutating operation. Returns (querier, error). If
 // SQLITE_BUSY, the error is detectable via isBusy(). If the transaction is
 // read-only, returns errReadOnlyTxn without binding or mutating.
-func (m *txnManager) getOrBindWrite(txnID uint64, hive *hivedb.HiveDB) (Querier, error) {
+func (m *txnManager) getOrBindWrite(ctx context.Context, txnID uint64, hive *hivedb.HiveDB) (Querier, error) {
 	m.mu.Lock()
 	info := m.txns[txnID]
 	if info == nil {
@@ -76,13 +84,18 @@ func (m *txnManager) getOrBindWrite(txnID uint64, hive *hivedb.HiveDB) (Querier,
 		return nil, errReadOnlyTxn
 	}
 
+	if info.failed {
+		m.mu.Unlock()
+		return nil, errInterruptedTxn
+	}
+
 	// Already bound — verify same hive and return existing querier.
 	if info.conn != nil {
 		if info.hive != hive {
 			m.mu.Unlock()
 			return nil, fmt.Errorf("transaction %d bound to different hive", txnID)
 		}
-		q := info.querier
+		q := &connQuerier{conn: info.conn, ctx: ctx}
 		m.mu.Unlock()
 		return q, nil
 	}
@@ -96,7 +109,6 @@ func (m *txnManager) getOrBindWrite(txnID uint64, hive *hivedb.HiveDB) (Querier,
 	m.mu.Unlock()
 
 	// Bind: acquire pinned connection and BEGIN IMMEDIATE.
-	ctx := context.Background()
 	conn, err := hive.WriteDB().Conn(ctx)
 	if err != nil {
 		m.mu.Lock()
@@ -107,6 +119,7 @@ func (m *txnManager) getOrBindWrite(txnID uint64, hive *hivedb.HiveDB) (Querier,
 
 	_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
 	if err != nil {
+		rollbackConn(conn)
 		conn.Close()
 		m.mu.Lock()
 		info.binding = false
@@ -114,12 +127,11 @@ func (m *txnManager) getOrBindWrite(txnID uint64, hive *hivedb.HiveDB) (Querier,
 		return nil, fmt.Errorf("BEGIN IMMEDIATE: %w", err)
 	}
 
-	q := &connQuerier{conn: conn}
+	q := &connQuerier{conn: conn, ctx: ctx}
 
 	m.mu.Lock()
 	info.hive = hive
 	info.conn = conn
-	info.querier = q
 	info.binding = false
 	m.mu.Unlock()
 
@@ -178,7 +190,7 @@ func (m *txnManager) anyWriteBound() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, info := range m.txns {
-		if info.conn != nil {
+		if !info.readOnly && info.conn != nil {
 			return true
 		}
 	}
@@ -189,7 +201,7 @@ func (m *txnManager) hiveBusy(hive *hivedb.HiveDB) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, info := range m.txns {
-		if info.hive == hive && info.conn != nil {
+		if !info.readOnly && info.hive == hive && info.conn != nil {
 			return true
 		}
 	}
@@ -209,12 +221,17 @@ func (m *txnManager) hiveBusy(hive *hivedb.HiveDB) bool {
 //   - Unknown txnID: pool.
 //
 // On SQLITE_BUSY during read-only bind, the error is detectable via isBusy().
-func (m *txnManager) getReadQuerier(txnID uint64, hive *hivedb.HiveDB) (Querier, bool, error) {
+func (m *txnManager) getReadQuerier(ctx context.Context, txnID uint64, hive *hivedb.HiveDB) (Querier, bool, error) {
 	m.mu.Lock()
 	info := m.txns[txnID]
 	if info == nil {
 		m.mu.Unlock()
 		return nil, false, nil
+	}
+
+	if info.failed {
+		m.mu.Unlock()
+		return nil, false, errInterruptedTxn
 	}
 
 	// Already bound (read-write write conn, or read-only snapshot conn).
@@ -223,7 +240,7 @@ func (m *txnManager) getReadQuerier(txnID uint64, hive *hivedb.HiveDB) (Querier,
 			m.mu.Unlock()
 			return nil, false, fmt.Errorf("transaction %d bound to different hive", txnID)
 		}
-		q := info.querier
+		q := &connQuerier{conn: info.conn, ctx: ctx}
 		m.mu.Unlock()
 		return q, true, nil
 	}
@@ -242,33 +259,41 @@ func (m *txnManager) getReadQuerier(txnID uint64, hive *hivedb.HiveDB) (Querier,
 	info.binding = true
 	m.mu.Unlock()
 
-	snapDB, err := hive.OpenSnapshotConn()
+	snapDB, err := hive.OpenSnapshotConn(ctx)
 	if err != nil {
 		m.clearBinding(info)
 		return nil, false, fmt.Errorf("open snapshot connection: %w", err)
 	}
-	ctx := context.Background()
 	conn, err := snapDB.Conn(ctx)
 	if err != nil {
 		snapDB.Close()
 		m.clearBinding(info)
 		return nil, false, fmt.Errorf("acquire snapshot connection: %w", err)
 	}
-	// BEGIN DEFERRED holds no lock yet; the snapshot is fixed at the first
-	// read executed on this connection, which the caller runs next.
+	// BEGIN DEFERRED alone fixes no snapshot. Read both schemas under the
+	// hive gate before releasing this request to a concurrent publisher.
 	if _, err := conn.ExecContext(ctx, "BEGIN DEFERRED"); err != nil {
+		rollbackConn(conn)
 		conn.Close()
 		snapDB.Close()
 		m.clearBinding(info)
 		return nil, false, fmt.Errorf("begin snapshot: %w", err)
 	}
 
-	q := &connQuerier{conn: conn}
+	var mainCount, volatileCount int
+	if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM main.keys), EXISTS(SELECT 1 FROM volatile.keys)").Scan(&mainCount, &volatileCount); err != nil {
+		rollbackConn(conn)
+		conn.Close()
+		snapDB.Close()
+		m.clearBinding(info)
+		return nil, false, fmt.Errorf("pin both snapshot stores: %w", err)
+	}
+
+	q := &connQuerier{conn: conn, ctx: ctx}
 	m.mu.Lock()
 	info.hive = hive
 	info.snapshotDB = snapDB
 	info.conn = conn
-	info.querier = q
 	info.binding = false
 	m.mu.Unlock()
 	return q, true, nil
@@ -286,47 +311,55 @@ func (m *txnManager) clearBinding(info *txnInfo) {
 // retry or abort (per spec: "The transaction remains open for retry
 // or abort").
 //
-// The lock is held across the COMMIT to prevent a concurrent abort()
-// from destroying the transaction mid-commit.
-func (m *txnManager) commit(txnID uint64) error {
+// The transaction operation gate excludes concurrent operations/abort;
+// the hive publication gate excludes readers only during COMMIT.
+func (m *txnManager) commit(ctx context.Context, txnID uint64) error {
+	unlock, err := m.lockOperation(ctx, txnID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.mu.Lock()
 	info := m.txns[txnID]
-	if info == nil {
-		m.mu.Unlock()
-		return fmt.Errorf("unknown transaction %d", txnID)
+	m.mu.Unlock()
+	if info.failed {
+		return errInterruptedTxn
 	}
-	if info.readOnly {
-		// LCS MUST NOT commit a read-only transaction (PSD-005 §7.2).
-		// Release the snapshot defensively and report success.
-		delete(m.txns, txnID)
-		m.mu.Unlock()
-		releaseSnapshot(info)
-		return nil
+	if info.hive != nil {
+		release, err := info.hive.Gate.Acquire(ctx, true)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
-	if info.conn == nil {
-		// Never bound — nothing to commit. Clean up.
-		delete(m.txns, txnID)
-		m.mu.Unlock()
-		return nil
-	}
-
-	_, err := info.conn.ExecContext(context.Background(), "COMMIT")
-	if err != nil {
-		// Transaction remains open for retry or abort.
+	m.mu.Lock()
+	if err := ctx.Err(); err != nil {
 		m.mu.Unlock()
 		return err
 	}
-
-	// Success — remove from map while still holding the lock so
-	// a concurrent abort() sees the txnID as already gone.
+	if info.leaseExpired(rsi.MonotonicNS()) {
+		m.mu.Unlock()
+		return errExpiredTxn
+	}
+	m.mu.Unlock()
+	if info.readOnly {
+		releaseSnapshot(info)
+	} else if info.conn != nil {
+		// Admission obeys the request deadline; an admitted COMMIT must
+		// resolve its storage outcome even if the caller or lease expires.
+		// Canceling here could report interruption after durable publication.
+		// SQLite's busy handler is disabled, so contention still returns busy.
+		if err := commitConn(ctx, info.conn); err != nil {
+			return err
+		}
+		for _, fn := range info.onCommit {
+			fn()
+		}
+		info.conn.Close()
+	}
+	m.mu.Lock()
 	delete(m.txns, txnID)
 	m.mu.Unlock()
-
-	// Run hooks and close connection outside the lock.
-	for _, fn := range info.onCommit {
-		fn()
-	}
-	info.conn.Close()
 	return nil
 }
 
@@ -334,8 +367,20 @@ func (m *txnManager) commit(txnID uint64) error {
 // Always succeeds per spec: "Disassociate the txn_id from the write
 // connection. Always succeeds."
 func (m *txnManager) abort(txnID uint64) {
+	// Abort is cleanup owed to LCS even if the original request expired.
+	unlock, err := m.lockOperationForCleanup(context.Background(), txnID)
+	if err != nil {
+		return
+	}
+	defer unlock()
 	m.mu.Lock()
 	info := m.txns[txnID]
+	m.mu.Unlock()
+	if info.hive != nil {
+		release, _ := info.hive.Gate.Acquire(context.Background(), true)
+		defer release()
+	}
+	m.mu.Lock()
 	delete(m.txns, txnID)
 	m.mu.Unlock()
 
@@ -344,10 +389,7 @@ func (m *txnManager) abort(txnID uint64) {
 	}
 
 	if info.conn != nil {
-		_, err := info.conn.ExecContext(context.Background(), "ROLLBACK")
-		if err != nil {
-			log.Printf("rollback transaction %d: %v (connection will be closed)", txnID, err)
-		}
+		rollbackConn(info.conn)
 		info.conn.Close()
 	}
 	// Read-only snapshots run on a dedicated DB; close it too.
@@ -366,7 +408,7 @@ func (m *txnManager) abort(txnID uint64) {
 // connection and dedicated DB. Safe to call with a never-bound snapshot.
 func releaseSnapshot(info *txnInfo) {
 	if info.conn != nil {
-		info.conn.ExecContext(context.Background(), "ROLLBACK")
+		rollbackConn(info.conn)
 		info.conn.Close()
 	}
 	if info.snapshotDB != nil {
@@ -374,14 +416,119 @@ func releaseSnapshot(info *txnInfo) {
 	}
 }
 
-// isBusy checks if an error indicates SQLite BUSY or LOCKED.
+// isBusy includes Go-side admission/deadline failures and SQLite primary codes.
+var errWriterBusy = errors.New("hive write connection is busy")
+
 func isBusy(err error) bool {
-	if err == nil {
+	if errors.Is(err, errWriterBusy) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	s := err.Error()
-	return strings.Contains(s, "database is locked") ||
-		strings.Contains(s, "database table is locked") ||
-		strings.Contains(s, "SQLITE_BUSY") ||
-		strings.Contains(s, "SQLITE_LOCKED")
+	code := sqliteErr.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
+}
+
+func discardConn(conn *sql.Conn) { conn.Raw(func(any) error { return driver.ErrBadConn }) }
+
+func (m *txnManager) lockOperation(ctx context.Context, id uint64) (func(), error) {
+	return m.lockOperationMode(ctx, id, false)
+}
+func (m *txnManager) lockOperationForCleanup(ctx context.Context, id uint64) (func(), error) {
+	return m.lockOperationMode(ctx, id, true)
+}
+func (m *txnManager) lockOperationMode(ctx context.Context, id uint64, cleanup bool) (func(), error) {
+	m.mu.Lock()
+	info := m.txns[id]
+	m.mu.Unlock()
+	if info == nil {
+		return nil, fmt.Errorf("unknown transaction %d", id)
+	}
+	unlock, err := info.operation.Acquire(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	current := m.txns[id]
+	expired := !cleanup && info.leaseExpired(rsi.MonotonicNS())
+	m.mu.Unlock()
+	if current != info || expired {
+		unlock()
+		return nil, fmt.Errorf("transaction %d ended", id)
+	}
+	return unlock, nil
+}
+
+// Caller holds the hive publication gate, so admission cannot race another bind.
+func (m *txnManager) otherWriter(hive *hivedb.HiveDB, id uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for txnID, info := range m.txns {
+		if txnID != id && !info.readOnly && info.hive == hive && info.conn != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// Close runs only after dispatch drains, releasing every pinned connection.
+func (m *txnManager) close() {
+	if m.stop != nil {
+		close(m.stop)
+		<-m.done
+	}
+	m.mu.Lock()
+	ids := make([]uint64, 0, len(m.txns))
+	for id := range m.txns {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		m.abort(id)
+	}
+}
+
+var errInterruptedTxn = errors.New("transaction interrupted; abort required")
+
+// Caller holds the transaction's operation gate. Do not expire a healthy
+// transaction using an invented daemon TTL: LCS owns its lifetime.
+func (m *txnManager) failInterrupted(id uint64) bool {
+	m.mu.Lock()
+	info := m.txns[id]
+	m.mu.Unlock()
+	if info == nil || info.conn == nil {
+		return false
+	}
+	rollbackConn(info.conn)
+	info.conn.Close()
+	if info.snapshotDB != nil {
+		info.snapshotDB.Close()
+	}
+	m.mu.Lock()
+	info.conn = nil
+	info.snapshotDB = nil
+	info.failed = true
+	m.mu.Unlock()
+	return true
+}
+
+func storageStatus(err error) uint32 {
+	if isBusy(err) {
+		return rsi.StatusTxnBusy
+	}
+	return rsi.StatusStorageError
+}
+
+// GUID cache misses must consult a bound transaction's own view. In particular,
+// deleting a key outside a backup evicts its cache entry, but cannot make that
+// key disappear from the backup's already-pinned snapshot.
+func (m *txnManager) boundQuerier(id uint64, hive *hivedb.HiveDB, ctx context.Context) Querier {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if info := m.txns[id]; info != nil && info.hive == hive && info.conn != nil && !info.failed {
+		return &connQuerier{conn: info.conn, ctx: ctx}
+	}
+	return nil
 }

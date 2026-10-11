@@ -1,16 +1,19 @@
 // Package hivedb manages per-hive SQLite database lifecycle for loregd.
 //
 // Each hive has one persistent database file (WAL mode) and one
-// attached in-memory volatile store (shared-cache mode). The
+// attached private-cache WAL volatile store. The
 // package handles schema creation, first-boot root key creation,
 // crash recovery, max sequence computation, and read/write
 // connection separation.
 package hivedb
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,7 +23,7 @@ import (
 	"github.com/peios/loregd/internal/fold"
 	"github.com/peios/loregd/internal/sd"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // ReadPoolSize returns the number of read connections per hive.
@@ -42,9 +45,12 @@ type HiveDB struct {
 	RootGUID [16]byte // Root key GUID.
 	Path     string   // Database file path.
 
-	writeDB  *sql.DB   // Single write connection.
-	readDBs  []*sql.DB // Read connection pool.
-	readNext atomic.Uint32
+	writeDB      *sql.DB   // Single write connection.
+	readDBs      []*sql.DB // Read connection pool.
+	readNext     atomic.Uint32
+	volatileDir  string
+	volatilePath string
+	Gate         Gate // coordinates publication across the two WAL databases
 }
 
 // Open opens (or creates) a hive database at path. It enables WAL
@@ -52,6 +58,22 @@ type HiveDB struct {
 // performs first-boot root creation if needed, runs crash recovery,
 // and creates the read connection pool.
 func Open(name, path string) (*HiveDB, error) {
+	return OpenIn(name, path, os.TempDir())
+}
+
+// OpenIn creates a fresh volatile database beneath volatileRoot. Production
+// passes the protected tmpfs runtime directory; tests may use a temporary dir.
+func OpenIn(name, path, volatileRoot string) (_ *HiveDB, err error) {
+	volatileDir, err := os.MkdirTemp(volatileRoot, "hive-")
+	if err != nil {
+		return nil, fmt.Errorf("create volatile store: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			os.RemoveAll(volatileDir)
+		}
+	}()
+	volatilePath := filepath.Join(volatileDir, "volatile.db")
 	// loregd owns its hive storage: create the database's parent directory if it
 	// is absent (e.g. /var/state/loregd on first boot) so SQLite can create the
 	// file. Registry hives can contain credentials and other security policy, so
@@ -65,7 +87,7 @@ func Open(name, path string) (*HiveDB, error) {
 	}
 
 	// Write connection: used for all mutations and startup.
-	writeDB, err := openConn(path, name)
+	writeDB, err := openConn(path, volatilePath)
 	if err != nil {
 		return nil, fmt.Errorf("open write connection for %s: %w", name, err)
 	}
@@ -90,7 +112,7 @@ func Open(name, path string) (*HiveDB, error) {
 	poolSize := ReadPoolSize()
 	readDBs := make([]*sql.DB, 0, poolSize)
 	for range poolSize {
-		rdb, err := openConn(path, name)
+		rdb, err := openConn(path, volatilePath)
 		if err != nil {
 			// Close already-opened connections.
 			for _, r := range readDBs {
@@ -103,38 +125,75 @@ func Open(name, path string) (*HiveDB, error) {
 	}
 
 	return &HiveDB{
-		Name:     name,
-		RootGUID: rootGUID,
-		Path:     path,
-		writeDB:  writeDB,
-		readDBs:  readDBs,
+		Name:         name,
+		RootGUID:     rootGUID,
+		Path:         path,
+		writeDB:      writeDB,
+		volatileDir:  volatileDir,
+		volatilePath: volatilePath,
+		readDBs:      readDBs,
 	}, nil
 }
 
 // openConn opens a single SQLite connection with WAL, foreign keys,
 // and volatile store attached.
-func openConn(path, hiveName string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+// connector initializes every physical connection, including replacements after
+// cancellation or an uncertain rollback. ATTACH is connection-local state.
+type connector struct {
+	path, volatilePath string
+	driver             *sqlite.Driver
+}
+
+func (c *connector) Driver() driver.Driver { return c.driver }
+func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	u := url.URL{Scheme: "file", Path: c.path}
+	conn, err := c.driver.Open(u.String())
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	q := conn.(sqlite.ExecQuerierContext)
+	fail := func(err error) (driver.Conn, error) { conn.Close(); return nil, err }
+	for _, statement := range []string{"PRAGMA busy_timeout=0", "PRAGMA foreign_keys=ON"} {
+		if _, err := q.ExecContext(ctx, statement, nil); err != nil {
+			return fail(err)
+		}
+	}
+	if _, err := q.ExecContext(ctx, "ATTACH ? AS volatile", []driver.NamedValue{{Ordinal: 1, Value: c.volatilePath}}); err != nil {
+		return fail(err)
+	}
+	for _, schema := range []string{"main", "volatile"} {
+		rows, err := q.QueryContext(ctx, "PRAGMA "+schema+".journal_mode=wal", nil)
+		if err != nil {
+			return fail(err)
+		}
+		values := make([]driver.Value, 1)
+		err = rows.Next(values)
+		rows.Close()
+		if err != nil {
+			return fail(err)
+		}
+		if values[0] != "wal" {
+			return fail(fmt.Errorf("%s journal mode is %v", schema, values[0]))
+		}
+	}
+	return conn, nil
+}
 
-	if err := enableWAL(db); err != nil {
+func openConn(path, volatilePath string) (*sql.DB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return openConnContext(ctx, path, volatilePath)
+}
+
+func openConnContext(ctx context.Context, path, volatilePath string) (*sql.DB, error) {
+	db := sql.OpenDB(&connector{path: path, volatilePath: volatilePath, driver: &sqlite.Driver{}})
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("WAL: %w", err)
-	}
-	if err := enableForeignKeys(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("foreign keys: %w", err)
-	}
-	if err := setBusyTimeout(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("busy timeout: %w", err)
-	}
-	if err := attachVolatile(db, hiveName); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("volatile attach: %w", err)
+		return nil, err
 	}
 	return db, nil
 }
@@ -155,8 +214,8 @@ func (h *HiveDB) ReadDB() *sql.DB {
 // connection so it never contends for the write lock. WAL mode gives the
 // snapshot stable MVCC isolation for persistent data once its first read
 // runs. The caller MUST Close it when the snapshot transaction is released.
-func (h *HiveDB) OpenSnapshotConn() (*sql.DB, error) {
-	return openConn(h.Path, h.Name)
+func (h *HiveDB) OpenSnapshotConn(ctx context.Context) (*sql.DB, error) {
+	return openConnContext(ctx, h.Path, h.volatilePath)
 }
 
 // MaxSequence returns the highest sequence number across all tables
@@ -198,6 +257,9 @@ func (h *HiveDB) Close() error {
 	if err := h.writeDB.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	if err := os.RemoveAll(h.volatileDir); firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
 }
 
@@ -205,38 +267,9 @@ func (h *HiveDB) Close() error {
 // Slice 1 tests.
 func (h *HiveDB) DB() *sql.DB { return h.writeDB }
 
-func enableWAL(db *sql.DB) error {
-	var mode string
-	err := db.QueryRow("PRAGMA journal_mode=wal").Scan(&mode)
-	if err != nil {
-		return err
-	}
-	if mode != "wal" {
-		return fmt.Errorf("expected WAL mode, got %q", mode)
-	}
-	return nil
-}
-
-func enableForeignKeys(db *sql.DB) error {
-	_, err := db.Exec("PRAGMA foreign_keys=ON")
-	return err
-}
-
-// BusyTimeoutMs is the compiled-in busy timeout for SQLite connections.
-// Set shorter than LCS's default RequestTimeoutMs (30s) so loregd
-// responds with RSI_TXN_BUSY before LCS times out the caller.
-const BusyTimeoutMs = 25000
-
-func setBusyTimeout(db *sql.DB) error {
-	_, err := db.Exec("PRAGMA busy_timeout=25000")
-	return err
-}
-
-func attachVolatile(db *sql.DB, hiveName string) error {
-	uri := fmt.Sprintf("file:%s_volatile?mode=memory&cache=shared", hiveName)
-	_, err := db.Exec("ATTACH ? AS volatile", uri)
-	return err
-}
+// BusyTimeoutMs is deliberately zero: SQLite's native busy wait can outlive a
+// canceled Go context. Return BUSY immediately and let the caller retry.
+const BusyTimeoutMs = 0
 
 func ensureSchema(db *sql.DB) error {
 	var tableExists int
