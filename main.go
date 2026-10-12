@@ -70,6 +70,12 @@ func run(args []string) error {
 		return fmt.Errorf("argument error: %w", err)
 	}
 
+	runtimeStore, err := hivedb.OpenRuntimeStore("/run/loregd")
+	if err != nil {
+		return fmt.Errorf("volatile storage: %w", err)
+	}
+	defer runtimeStore.Close()
+
 	hives := make([]*hivedb.HiveDB, 0, len(configs))
 	defer func() {
 		for _, h := range hives {
@@ -82,7 +88,7 @@ func run(args []string) error {
 	var globalMaxSeq uint64
 	regs := make([]device.HiveRegistration, 0, len(configs))
 	for _, cfg := range configs {
-		h, err := hivedb.Open(cfg.Name, cfg.Path)
+		h, err := hivedb.OpenIn(cfg.Name, cfg.Path, runtimeStore.Path)
 		if err != nil {
 			return fmt.Errorf("hive %s: %w", cfg.Name, err)
 		}
@@ -103,7 +109,9 @@ func run(args []string) error {
 
 	// Wire RSI operation handlers onto a dispatcher.
 	disp := rsi.NewDispatcher()
-	handler.New(hives).Register(disp)
+	handlers := handler.New(hives)
+	defer handlers.Close()
+	handlers.Register(disp)
 
 	// Step 8: open /dev/pkm_registry (kernel checks SeTcbPrivilege).
 	dev, err := device.Open()
@@ -111,6 +119,11 @@ func run(args []string) error {
 		return err
 	}
 	defer dev.Close()
+	lifetime, err := device.Negotiate(dev)
+	if err != nil {
+		return err
+	}
+	handlers.EnableLeases(lifetime.Renew)
 
 	// Step 9: register all hives, root GUIDs, and the global max sequence.
 	// Through Control rather than dev.Fd(): Fd puts the file in blocking
@@ -151,7 +164,7 @@ func run(args []string) error {
 
 	// Step 10: enter the request loop. Returns nil on device close
 	// (LCS shutdown), or an error on malformed framing / I/O failure.
-	if err := device.Serve(dev, disp); err != nil {
+	if err := device.ServeWithLifetime(dev, disp, lifetime); err != nil {
 		return fmt.Errorf("request loop: %w", err)
 	}
 	infoLog.Printf("loregd: device closed, exiting")

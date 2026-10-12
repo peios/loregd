@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS blanket_tombstones (
 );
 `
 
-// Volatile schema DDL (in-memory attached database).
+// Volatile schema DDL (tmpfs-backed attached database).
 const volatileSchemaDDL = `
 CREATE TABLE IF NOT EXISTS volatile.keys (
     guid           BLOB NOT NULL PRIMARY KEY,
