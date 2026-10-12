@@ -20,37 +20,58 @@ func (h *Handler) registerTxnHandlers(d *rsi.Dispatcher) {
 	d.Register(rsi.OpFlush, h.handleFlush)
 }
 
-func (h *Handler) handleBeginTransaction(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleBeginTransaction(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	header.TxnID = 0 // transaction control identifies the transaction in its payload
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeBeginTransactionRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	if err := h.txns.beginMode(req.TxnID, req.Mode == rsi.TxnReadOnly); err != nil {
+	if err := h.txns.beginLeased(req.TxnID, req.Mode == rsi.TxnReadOnly, header); err != nil {
 		log.Printf("begin transaction %d: %v", req.TxnID, err)
 		return rsi.StatusInvalid, nil
 	}
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleCommitTransaction(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleCommitTransaction(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	if header.Session != 0 && header.LeaseNS == 0 {
+		return rsi.StatusInvalid, nil
+	}
+	header.TxnID = 0 // transaction control identifies the transaction in its payload
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer hdr.close() // commit owns its outcome after admission
 	req, err := rsi.DecodeCommitTransactionRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	if err := h.txns.commit(req.TxnID); err != nil {
+	if err := h.txns.commit(hdr.ctx, req.TxnID); err != nil {
 		if isBusy(err) {
 			return rsi.StatusTxnBusy, nil
 		}
 		log.Printf("commit transaction %d: %v", req.TxnID, err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleAbortTransaction(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleAbortTransaction(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	header.TxnID = 0 // transaction control identifies the transaction in its payload
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeAbortTransactionRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
@@ -61,7 +82,12 @@ func (h *Handler) handleAbortTransaction(hdr rsi.RequestHeader, payload []byte) 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleDeleteLayer(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleDeleteLayer(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeDeleteLayerRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
@@ -86,7 +112,16 @@ func (h *Handler) handleDeleteLayer(hdr rsi.RequestHeader, payload []byte) (uint
 
 	// RSI_DELETE_LAYER applies to ALL hives.
 	for _, hive := range h.hives {
-		orphans, err := deleteLayerFromHive(hive, req.LayerName)
+		unlock, err := hive.Gate.Acquire(hdr.ctx, true)
+		if err != nil {
+			return mapWriteErr("delete layer", err), nil
+		}
+		if h.txns.otherWriter(hive, 0) {
+			unlock()
+			return rsi.StatusTxnBusy, nil
+		}
+		orphans, err := deleteLayerFromHive(hdr.ctx, hive, req.LayerName)
+		unlock()
 		if err != nil {
 			// A contended write is RSI_TXN_BUSY, not a storage error — the
 			// same distinction every other write path draws.
@@ -94,7 +129,7 @@ func (h *Handler) handleDeleteLayer(hdr rsi.RequestHeader, payload []byte) (uint
 				return rsi.StatusTxnBusy, nil
 			}
 			log.Printf("delete layer %q from %s: %v", req.LayerName, hive.Name, err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 		allOrphans = append(allOrphans, orphans...)
 	}
@@ -117,7 +152,12 @@ func (h *Handler) handleDeleteLayer(hdr rsi.RequestHeader, payload []byte) (uint
 	return rsi.StatusOK, enc.Bytes()
 }
 
-func (h *Handler) handleFlush(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleFlush(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeFlushRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
@@ -133,6 +173,10 @@ func (h *Handler) handleFlush(hdr rsi.RequestHeader, payload []byte) (uint32, []
 		return rsi.StatusInvalid, nil
 	}
 
+	if err := hdr.lockHive(hive, true); err != nil {
+		return mapWriteErr("flush", err), nil
+	}
+
 	// If a transaction holds the write connection for this hive,
 	// attempting a checkpoint would deadlock (MaxOpenConns=1).
 	if h.txns.hiveBusy(hive) {
@@ -140,10 +184,10 @@ func (h *Handler) handleFlush(hdr rsi.RequestHeader, payload []byte) (uint32, []
 	}
 
 	var busy, logPages, checkpointed int
-	err = hive.WriteDB().QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logPages, &checkpointed)
+	err = hive.WriteDB().QueryRowContext(hdr.ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logPages, &checkpointed)
 	if err != nil {
 		log.Printf("flush %s: %v", hive.Name, err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	if busy != 0 {
 		log.Printf("flush %s: checkpoint blocked by readers (log=%d, checkpointed=%d)", hive.Name, logPages, checkpointed)
@@ -155,8 +199,7 @@ func (h *Handler) handleFlush(hdr rsi.RequestHeader, payload []byte) (uint32, []
 
 // deleteLayerFromHive removes all entries for a layer from one hive,
 // within a transaction. Returns the set of orphaned GUIDs.
-func deleteLayerFromHive(hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, error) {
-	ctx := context.Background()
+func deleteLayerFromHive(ctx context.Context, hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, error) {
 
 	// Use a pinned connection with BEGIN IMMEDIATE to prevent
 	// concurrent writers from interleaving between the orphan-
@@ -166,12 +209,16 @@ func deleteLayerFromHive(hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, err
 		return nil, fmt.Errorf("acquire write connection: %w", err)
 	}
 	defer conn.Close()
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackConn(conn)
+		}
+	}()
 
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return nil, fmt.Errorf("begin immediate: %w", err)
 	}
-
-	rollback := func() { conn.ExecContext(ctx, "ROLLBACK") }
 
 	// Capture orphaned GUIDs before deletion.
 	rows, err := conn.QueryContext(ctx, `
@@ -191,7 +238,6 @@ func deleteLayerFromHive(hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, err
 		)
 	`, layerName, layerName, layerName, layerName)
 	if err != nil {
-		rollback()
 		return nil, err
 	}
 
@@ -200,7 +246,6 @@ func deleteLayerFromHive(hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, err
 		var guidBytes []byte
 		if err := rows.Scan(&guidBytes); err != nil {
 			rows.Close()
-			rollback()
 			return nil, err
 		}
 		var g rsi.GUID
@@ -211,7 +256,6 @@ func deleteLayerFromHive(hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, err
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		rollback()
 		return nil, fmt.Errorf("orphan scan: %w", err)
 	}
 
@@ -229,14 +273,14 @@ func deleteLayerFromHive(hive *hivedb.HiveDB, layerName string) ([]rsi.GUID, err
 	}
 	for _, d := range deletes {
 		if _, err := conn.ExecContext(ctx, d.query, layerName); err != nil {
-			rollback()
 			return nil, fmt.Errorf("delete %s: %w", d.desc, err)
 		}
 	}
 
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := commitConn(ctx, conn); err != nil {
 		return nil, err
 	}
 
+	committed = true
 	return orphans, nil
 }

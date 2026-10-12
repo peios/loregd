@@ -55,17 +55,19 @@ func sortPathEntries(entries []rsi.LookupPathEntry) {
 
 // Handler routes RSI operations to the correct hive database.
 type Handler struct {
-	hives     map[string]*hivedb.HiveDB // folded hive name -> DB
-	guidCache sync.Map                  // rsi.GUID -> *hivedb.HiveDB
-	txns      *txnManager
+	hives         map[string]*hivedb.HiveDB // folded hive name -> DB
+	guidCache     sync.Map                  // rsi.GUID -> *hivedb.HiveDB
+	requestBudget time.Duration
+	txns          *txnManager
 }
 
 // New creates a Handler with the given hive databases.
 // Seeds the GUID-to-hive cache with each hive's root GUID.
 func New(hives []*hivedb.HiveDB) *Handler {
 	h := &Handler{
-		hives: make(map[string]*hivedb.HiveDB, len(hives)),
-		txns:  newTxnManager(),
+		hives:         make(map[string]*hivedb.HiveDB, len(hives)),
+		txns:          newTxnManager(),
+		requestBudget: requestTimeout,
 	}
 	for _, hive := range hives {
 		h.hives[fold.String(hive.Name)] = hive
@@ -97,15 +99,24 @@ func (h *Handler) Register(d *rsi.Dispatcher) {
 // (binding the write connection on the first mutating op). For
 // non-transactional requests, returns the hive's write DB. Returns
 // errReadOnlyTxn if the request is tagged with a read-only transaction.
-func (h *Handler) writeQ(hdr rsi.RequestHeader, hive *hivedb.HiveDB) (Querier, error) {
+func (h *Handler) writeQ(hdr *request, hive *hivedb.HiveDB) (Querier, error) {
+	if err := h.txns.mutationAllowed(hdr.TxnID); err != nil {
+		return nil, err
+	}
+	if err := hdr.lockHive(hive, true); err != nil {
+		return nil, err
+	}
+	if h.txns.otherWriter(hive, hdr.TxnID) {
+		return nil, errWriterBusy
+	}
 	if hdr.TxnID != 0 {
-		q, err := h.txns.getOrBindWrite(hdr.TxnID, hive)
+		q, err := h.txns.getOrBindWrite(hdr.ctx, hdr.TxnID, hive)
 		if err != nil {
 			return nil, err
 		}
 		return q, nil
 	}
-	return hive.WriteDB(), nil
+	return &dbQuerier{db: hive.WriteDB(), ctx: hdr.ctx}, nil
 }
 
 // readQ returns the appropriate read querier for a request, plus an error
@@ -113,9 +124,12 @@ func (h *Handler) writeQ(hdr rsi.RequestHeader, hive *hivedb.HiveDB) (Querier, e
 // transaction it returns the pinned connection (read-your-own-writes); for
 // a read-only transaction it returns a pinned snapshot connection; otherwise
 // it returns a connection from the read pool.
-func (h *Handler) readQ(hdr rsi.RequestHeader, hive *hivedb.HiveDB) (Querier, error) {
+func (h *Handler) readQ(hdr *request, hive *hivedb.HiveDB) (Querier, error) {
+	if err := hdr.lockHive(hive, false); err != nil {
+		return nil, err
+	}
 	if hdr.TxnID != 0 {
-		q, bound, err := h.txns.getReadQuerier(hdr.TxnID, hive)
+		q, bound, err := h.txns.getReadQuerier(hdr.ctx, hdr.TxnID, hive)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +137,7 @@ func (h *Handler) readQ(hdr rsi.RequestHeader, hive *hivedb.HiveDB) (Querier, er
 			return q, nil
 		}
 	}
-	return hive.ReadDB(), nil
+	return &dbQuerier{db: hive.ReadDB(), ctx: hdr.ctx}, nil
 }
 
 // mapWriteErr classifies a writeQ failure into an RSI status code.
@@ -161,16 +175,25 @@ func mapReadErr(op string, err error) uint32 {
 // cannot then distinguish a key that was deleted from one it can no
 // longer read, and a caller sees a clean negative rather than something
 // to retry or escalate.
-func (h *Handler) resolveHive(guid rsi.GUID) (*hivedb.HiveDB, error) {
+func (h *Handler) resolveHive(hdr *request, guid rsi.GUID) (*hivedb.HiveDB, error) {
 	if v, ok := h.guidCache.Load(guid); ok {
 		return v.(*hivedb.HiveDB), nil
 	}
 	for _, hive := range h.hives {
 		var exists int
-		err := hive.ReadDB().QueryRow(
+		unlock, err := hive.Gate.Acquire(hdr.ctx, false)
+		if err != nil {
+			return nil, err
+		}
+		var q Querier = &dbQuerier{db: hive.ReadDB(), ctx: hdr.ctx}
+		if bound := h.txns.boundQuerier(hdr.TxnID, hive, hdr.ctx); bound != nil {
+			q = bound
+		}
+		err = q.QueryRow(
 			"SELECT 1 FROM main.keys WHERE guid = ? UNION ALL SELECT 1 FROM volatile.keys WHERE guid = ? LIMIT 1",
 			guid[:], guid[:],
 		).Scan(&exists)
+		unlock()
 		switch {
 		case err == nil:
 			h.guidCache.Store(guid, hive)
@@ -184,17 +207,17 @@ func (h *Handler) resolveHive(guid rsi.GUID) (*hivedb.HiveDB, error) {
 	return nil, nil
 }
 
-func (h *Handler) resolveHiveByParent(parentGUID rsi.GUID) (*hivedb.HiveDB, error) {
-	return h.resolveHive(parentGUID)
+func (h *Handler) resolveHiveByParent(hdr *request, parentGUID rsi.GUID) (*hivedb.HiveDB, error) {
+	return h.resolveHive(hdr, parentGUID)
 }
 
 // resolveHiveStatus is the caller-side shape of resolveHive: it returns
 // the hive, or the RSI status to answer with and false.
-func (h *Handler) resolveHiveStatus(op string, guid rsi.GUID) (*hivedb.HiveDB, uint32, bool) {
-	hive, err := h.resolveHive(guid)
+func (h *Handler) resolveHiveStatus(hdr *request, op string, guid rsi.GUID) (*hivedb.HiveDB, uint32, bool) {
+	hive, err := h.resolveHive(hdr, guid)
 	if err != nil {
 		log.Printf("%s: %v", op, err)
-		return nil, rsi.StatusStorageError, false
+		return nil, storageStatus(err), false
 	}
 	if hive == nil {
 		return nil, rsi.StatusNotFound, false
@@ -265,13 +288,18 @@ func pathEntryExistsInQ(q Querier, schema string, parentGUID rsi.GUID, foldedNam
 
 // --- Path operations ---
 
-func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleLookup(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeLookupRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHiveByParent", req.ParentGUID)
 	if !ok {
 		return st, nil
 	}
@@ -293,7 +321,7 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 	`, req.ParentGUID[:], foldedName, req.ParentGUID[:], foldedName)
 	if err != nil {
 		log.Printf("lookup query error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	defer rows.Close()
 
@@ -305,7 +333,7 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 		var targetGUID []byte
 		if err := rows.Scan(&e.LayerName, &e.TargetType, &targetGUID, &e.Sequence); err != nil {
 			log.Printf("lookup scan error: %v", err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 		if e.TargetType == rsi.TargetGUID && targetGUID != nil {
 			copy(e.TargetGUID[:], targetGUID)
@@ -315,7 +343,7 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("lookup iteration error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	sortPathEntries(entries)
 
@@ -337,7 +365,7 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 		}
 		if err != nil {
 			log.Printf("lookup meta error for %x: %v", guid, err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 		meta = append(meta, m)
 	}
@@ -357,13 +385,18 @@ func (h *Handler) handleLookup(hdr rsi.RequestHeader, payload []byte) (uint32, [
 	return rsi.StatusOK, enc.Bytes()
 }
 
-func (h *Handler) handleCreateEntry(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleCreateEntry(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeCreateEntryRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHiveByParent", req.ParentGUID)
 	if !ok {
 		return st, nil
 	}
@@ -390,7 +423,7 @@ func (h *Handler) handleCreateEntry(hdr rsi.RequestHeader, payload []byte) (uint
 		vol = false
 	} else if volErr != nil {
 		log.Printf("create entry isVolatile: %v", volErr)
-		return rsi.StatusStorageError, nil
+		return storageStatus(volErr), nil
 	}
 	other := "volatile"
 	if vol {
@@ -405,7 +438,7 @@ func (h *Handler) handleCreateEntry(hdr rsi.RequestHeader, payload []byte) (uint
 	// which the layer model does not expect.
 	if exists, err := pathEntryExistsInQ(wq, other, req.ParentGUID, foldedName, req.LayerName); err != nil {
 		log.Printf("create entry cross-schema check: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	} else if exists {
 		return rsi.StatusAlreadyExists, nil
 	}
@@ -419,19 +452,24 @@ func (h *Handler) handleCreateEntry(hdr rsi.RequestHeader, payload []byte) (uint
 			return rsi.StatusAlreadyExists, nil
 		}
 		log.Printf("create entry error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleHideEntry(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleHideEntry(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeHideEntryRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHiveByParent", req.ParentGUID)
 	if !ok {
 		return st, nil
 	}
@@ -450,7 +488,7 @@ func (h *Handler) handleHideEntry(hdr rsi.RequestHeader, payload []byte) (uint32
 	}
 	if volErr != nil {
 		log.Printf("hide entry isVolatile: %v", volErr)
-		return rsi.StatusStorageError, nil
+		return storageStatus(volErr), nil
 	}
 	if vol {
 		table = "volatile.path_entries"
@@ -462,19 +500,24 @@ func (h *Handler) handleHideEntry(hdr rsi.RequestHeader, payload []byte) (uint32
 	`, req.ParentGUID[:], req.ChildName, foldedName, req.LayerName, req.Sequence)
 	if err != nil {
 		log.Printf("hide entry error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleDeleteEntry(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleDeleteEntry(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeDeleteEntryRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHiveByParent", req.ParentGUID)
 	if !ok {
 		return st, nil
 	}
@@ -489,24 +532,29 @@ func (h *Handler) handleDeleteEntry(hdr rsi.RequestHeader, payload []byte) (uint
 	if _, err := wq.Exec(`DELETE FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?`,
 		req.ParentGUID[:], foldedName, req.LayerName); err != nil {
 		log.Printf("delete entry (main): %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	if _, err := wq.Exec(`DELETE FROM volatile.path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?`,
 		req.ParentGUID[:], foldedName, req.LayerName); err != nil {
 		log.Printf("delete entry (volatile): %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleEnumChildren(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeEnumChildrenRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHiveByParent", req.ParentGUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHiveByParent", req.ParentGUID)
 	if !ok {
 		return st, nil
 	}
@@ -525,7 +573,7 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 	`, req.ParentGUID[:], req.ParentGUID[:])
 	if err != nil {
 		log.Printf("enum children query error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	defer rows.Close()
 
@@ -544,7 +592,7 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 
 		if err := rows.Scan(&childName, &childNameFolded, &layerName, &targetType, &targetGUID, &sequence); err != nil {
 			log.Printf("enum children scan error: %v", err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 
 		entry := rsi.LookupPathEntry{
@@ -576,7 +624,7 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("enum children iteration error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	// Emit children in a deterministic order (ascending folded name). Ranging
@@ -623,7 +671,7 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 		}
 		if err != nil {
 			log.Printf("enum children meta error for %x: %v", guid, err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 		meta = append(meta, m)
 	}
@@ -653,16 +701,21 @@ func (h *Handler) handleEnumChildren(hdr rsi.RequestHeader, payload []byte) (uin
 
 // --- Key operations ---
 
-func (h *Handler) handleCreateKey(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleCreateKey(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeCreateKeyRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, err := h.resolveHive(req.ParentGUID)
+	hive, err := h.resolveHive(hdr, req.ParentGUID)
 	if err != nil {
 		log.Printf("create entry: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	if hive == nil {
 		for _, hv := range h.hives {
@@ -696,7 +749,7 @@ func (h *Handler) handleCreateKey(hdr rsi.RequestHeader, payload []byte) (uint32
 	// store returned RSI_OK and left the GUID in both.
 	if exists, err := keyExistsInQ(wq, other, req.GUID); err != nil {
 		log.Printf("create key cross-schema check: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	} else if exists {
 		return rsi.StatusAlreadyExists, nil
 	}
@@ -719,7 +772,7 @@ func (h *Handler) handleCreateKey(hdr rsi.RequestHeader, payload []byte) (uint32
 			return rsi.StatusAlreadyExists, nil
 		}
 		log.Printf("create key error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	// Cache immediately; needed for resolveHive within the same
@@ -733,13 +786,18 @@ func (h *Handler) handleCreateKey(hdr rsi.RequestHeader, payload []byte) (uint32
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleReadKey(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleReadKey(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeReadKeyRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHive", req.GUID)
 	if !ok {
 		return st, nil
 	}
@@ -754,7 +812,7 @@ func (h *Handler) handleReadKey(hdr rsi.RequestHeader, payload []byte) (uint32, 
 			return rsi.StatusNotFound, nil
 		}
 		log.Printf("read key error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	enc := rsi.NewEncoder(128)
@@ -762,7 +820,12 @@ func (h *Handler) handleReadKey(hdr rsi.RequestHeader, payload []byte) (uint32, 
 	return rsi.StatusOK, enc.Bytes()
 }
 
-func (h *Handler) handleWriteKey(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleWriteKey(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeWriteKeyRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
@@ -772,7 +835,7 @@ func (h *Handler) handleWriteKey(hdr rsi.RequestHeader, payload []byte) (uint32,
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, st, ok := h.resolveHiveStatus("resolveHive", req.GUID)
+	hive, st, ok := h.resolveHiveStatus(hdr, "resolveHive", req.GUID)
 	if !ok {
 		return st, nil
 	}
@@ -789,7 +852,7 @@ func (h *Handler) handleWriteKey(hdr rsi.RequestHeader, payload []byte) (uint32,
 	}
 	if volErr != nil {
 		log.Printf("write key isVolatile: %v", volErr)
-		return rsi.StatusStorageError, nil
+		return storageStatus(volErr), nil
 	}
 	if vol {
 		table = "volatile.keys"
@@ -811,14 +874,14 @@ func (h *Handler) handleWriteKey(hdr rsi.RequestHeader, payload []byte) (uint32,
 		}
 		if err != nil {
 			log.Printf("write key existence check: %v", err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 		return rsi.StatusOK, nil
 	}
 
 	if err != nil {
 		log.Printf("write key error: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 
 	// Check that the UPDATE matched a row.
@@ -829,16 +892,21 @@ func (h *Handler) handleWriteKey(hdr rsi.RequestHeader, payload []byte) (uint32,
 	return rsi.StatusOK, nil
 }
 
-func (h *Handler) handleDropKey(hdr rsi.RequestHeader, payload []byte) (uint32, []byte) {
+func (h *Handler) handleDropKey(header rsi.RequestHeader, payload []byte) (status uint32, response []byte) {
+	hdr, err := h.startRequest(header)
+	if err != nil {
+		return mapWriteErr("request", err), nil
+	}
+	defer h.finishRequest(hdr, &status)
 	req, err := rsi.DecodeDropKeyRequest(rsi.NewDecoder(payload))
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
 
-	hive, err := h.resolveHive(req.GUID)
+	hive, err := h.resolveHive(hdr, req.GUID)
 	if err != nil {
 		log.Printf("drop key: %v", err)
-		return rsi.StatusStorageError, nil
+		return storageStatus(err), nil
 	}
 	if hive == nil {
 		// Dropping a key that is already gone is a success. Dropping one
@@ -866,27 +934,27 @@ func (h *Handler) handleDropKey(hdr rsi.RequestHeader, payload []byte) (uint32, 
 	// For non-transactional drops, wrap in a local transaction.
 	// For transactional drops, the outer transaction provides atomicity.
 	if hdr.TxnID == 0 {
-		tx, err := hive.WriteDB().Begin()
+		tx, err := hive.WriteDB().BeginTx(hdr.ctx, nil)
 		if err != nil {
 			log.Printf("drop key begin tx: %v", err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 		defer tx.Rollback()
 		for _, q := range dropDeletes {
 			if _, err := tx.Exec(q, req.GUID[:]); err != nil {
 				log.Printf("drop key: %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
 		}
 		if err := tx.Commit(); err != nil {
 			log.Printf("drop key commit: %v", err)
-			return rsi.StatusStorageError, nil
+			return storageStatus(err), nil
 		}
 	} else {
 		for _, q := range dropDeletes {
 			if _, err := wq.Exec(q, req.GUID[:]); err != nil {
 				log.Printf("drop key (txn): %v", err)
-				return rsi.StatusStorageError, nil
+				return storageStatus(err), nil
 			}
 		}
 	}
@@ -948,3 +1016,6 @@ func isUniqueViolation(err error) bool {
 	}
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
+
+// Close releases transactions after the request loop has drained.
+func (h *Handler) Close() { h.txns.close() }

@@ -24,6 +24,17 @@ The service creates a missing database parent directory with mode 0700. It
 enables write-ahead logging, validates the database schema, creates a new root
 key when needed, registers every hive with the kernel, and then enters the
 request loop.
+.PP
+Volatile data uses private-cache SQLite WAL databases beneath
+.B /run/loregd
+on tmpfs. The protected SYSTEM-only directory is locked to one daemon;
+startup discards crash residue and creates fresh stores. A restart never
+recovers old volatile data. Readers remain usable while a write transaction
+is open, and competing writes return busy. Request waits use the kernel's absolute deadline.
+RSI lifetime extension version 1 is required; incompatible kernels fail startup.
+Renewable cleanup leases follow live kernel transaction ownership, including
+read-only snapshots. Expired leases reject new operations and release state
+after any already-admitted commit resolves.
 .SH READINESS
 If
 .B NOTIFY_SOCKET
@@ -42,6 +53,9 @@ Default Machine hive path selected by peinit.
 .TP
 .B /var/state/loregd/Users.hive
 Default Users hive path selected by peinit.
+.TP
+.B /run/loregd
+Protected volatile databases and the daemon lifetime lock.
 .SH SIGNALS
 .B SIGTERM
 and
