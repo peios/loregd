@@ -228,22 +228,23 @@ func (h *Handler) resolveHiveStatus(hdr *request, op string, guid rsi.GUID) (*hi
 // errKeyNotFound is returned by isVolatileQ when the GUID is not in either database.
 var errKeyNotFound = fmt.Errorf("key GUID not found")
 
-// isVolatileQ checks the volatile flag for a key GUID.
-// Returns (volatile, error). Returns errKeyNotFound if the GUID is
-// not in either database. Returns a wrapped error for real storage errors.
+// isVolatileQ reports which schema contains a key GUID, checking main first.
+// The redundant volatile column does not control routing if it disagrees with
+// the row's actual store. Returns errKeyNotFound for absence from both schemas,
+// or a wrapped error for real storage errors.
 func isVolatileQ(q Querier, guid rsi.GUID) (bool, error) {
-	var v int
-	err := q.QueryRow("SELECT volatile FROM main.keys WHERE guid = ?", guid[:]).Scan(&v)
+	var one int
+	err := q.QueryRow("SELECT 1 FROM main.keys WHERE guid = ?", guid[:]).Scan(&one)
 	if err == nil {
-		return v != 0, nil
+		return false, nil
 	}
 	if err != sql.ErrNoRows {
 		return false, fmt.Errorf("isVolatileQ main: %w", err)
 	}
 	// Not in main; check volatile.
-	err = q.QueryRow("SELECT volatile FROM volatile.keys WHERE guid = ?", guid[:]).Scan(&v)
+	err = q.QueryRow("SELECT 1 FROM volatile.keys WHERE guid = ?", guid[:]).Scan(&one)
 	if err == nil {
-		return v != 0, nil
+		return true, nil
 	}
 	if err != sql.ErrNoRows {
 		return false, fmt.Errorf("isVolatileQ volatile: %w", err)
