@@ -1,10 +1,12 @@
 package rsi
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // TestDecodeBeginTransactionMode covers the RSI_BEGIN_TRANSACTION mode field
-// (PSD-005 §11.3): present modes decode, and an absent mode defaults to
-// read-write (tolerant decode for the source-agnostic begin path).
+// (PSPK §4.4): both defined modes decode only with their complete payload.
 func TestDecodeBeginTransactionMode(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -24,12 +26,6 @@ func TestDecodeBeginTransactionMode(t *testing.T) {
 			wantTxn:  8,
 			wantMode: TxnReadOnly,
 		},
-		{
-			name:     "mode absent defaults read-write",
-			build:    func(e *Encoder) { e.PutUint64(9) },
-			wantTxn:  9,
-			wantMode: TxnReadWrite,
-		},
 	}
 
 	for _, tc := range cases {
@@ -47,5 +43,21 @@ func TestDecodeBeginTransactionMode(t *testing.T) {
 				t.Errorf("Mode = %d, want %d", r.Mode, tc.wantMode)
 			}
 		})
+	}
+}
+
+func TestDecodeBeginTransactionRejectsTruncation(t *testing.T) {
+	for _, mode := range []uint32{TxnReadWrite, TxnReadOnly} {
+		e := NewEncoder(12)
+		e.PutUint64(9)
+		e.PutUint32(mode)
+		payload := e.Bytes()
+		for n := 0; n < len(payload); n++ {
+			t.Run(fmt.Sprintf("mode-%d/bytes-%d", mode, n), func(t *testing.T) {
+				if _, err := DecodeBeginTransactionRequest(NewDecoder(payload[:n])); err == nil {
+					t.Fatal("truncated BEGIN decoded without error")
+				}
+			})
+		}
 	}
 }

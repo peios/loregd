@@ -153,7 +153,7 @@ func TestDecoderIgnoresTrailingBytes(t *testing.T) {
 		{
 			"BeginTransactionRequest",
 			func(d *Decoder) error { _, err := DecodeBeginTransactionRequest(d); return err },
-			func(e *Encoder) { e.PutUint64(42) },
+			func(e *Encoder) { e.PutUint64(42); e.PutUint32(TxnReadWrite) },
 		},
 		{
 			"DeleteLayerRequest",

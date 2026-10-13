@@ -31,6 +31,9 @@ func (h *Handler) handleBeginTransaction(header rsi.RequestHeader, payload []byt
 	if err != nil {
 		return rsi.StatusInvalid, nil
 	}
+	if req.Mode != rsi.TxnReadWrite && req.Mode != rsi.TxnReadOnly {
+		return rsi.StatusInvalid, nil
+	}
 
 	if err := h.txns.beginLeased(req.TxnID, req.Mode == rsi.TxnReadOnly, header); err != nil {
 		log.Printf("begin transaction %d: %v", req.TxnID, err)
