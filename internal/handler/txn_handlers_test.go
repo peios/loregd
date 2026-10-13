@@ -420,9 +420,7 @@ func TestFlushCaseInsensitive(t *testing.T) {
 // --- Payload builders ---
 
 func encodeBeginTxn(txnID uint64) []byte {
-	e := rsi.NewEncoder(8)
-	e.PutUint64(txnID)
-	return e.Bytes()
+	return encodeBeginTxnMode(txnID, rsi.TxnReadWrite)
 }
 
 func encodeCommitTxn(txnID uint64) []byte {
