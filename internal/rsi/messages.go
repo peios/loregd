@@ -440,13 +440,10 @@ func DecodeBeginTransactionRequest(d *Decoder) (BeginTransactionRequest, error) 
 	if r.TxnID, err = d.Uint64(); err != nil {
 		return r, err
 	}
-	// LCS always sends the mode field (PSD-005 §11.3). Tolerate its
-	// absence (defaulting to read-write) so the source-agnostic begin
-	// path and older callers remain valid.
-	if d.Remaining() >= 4 {
-		if r.Mode, err = d.Uint32(); err != nil {
-			return r, err
-		}
+	// PSPK §4.4 requires the complete mode field; truncation must not
+	// silently select a writable transaction.
+	if r.Mode, err = d.Uint32(); err != nil {
+		return r, err
 	}
 	return r, nil
 }
