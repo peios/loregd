@@ -3,10 +3,25 @@ package hivedb
 import (
 	"database/sql"
 	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func closeTestResource(t *testing.T, resource io.Closer) {
+	t.Helper()
+	if err := resource.Close(); err != nil {
+		t.Errorf("close test resource: %v", err)
+	}
+}
+
+func execSQL(t *testing.T, database *sql.DB, query string, args ...any) {
+	t.Helper()
+	if _, err := database.Exec(query, args...); err != nil {
+		t.Fatalf("execute test SQL: %v", err)
+	}
+}
 
 func tempDBPath(t *testing.T) string {
 	t.Helper()
@@ -20,7 +35,7 @@ func TestOpenCreatesNewDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	// Database file should exist.
 	if _, err := os.Stat(path); err != nil {
@@ -54,7 +69,7 @@ func TestOpenProtectsNewHiveDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -74,14 +89,14 @@ func TestOpenExistingDatabase(t *testing.T) {
 		t.Fatalf("first Open: %v", err)
 	}
 	guid1 := h1.RootGUID
-	h1.Close()
+	closeTestResource(t, h1)
 
 	// Second open: should find existing root key.
 	h2, err := Open("Machine", path)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
-	defer h2.Close()
+	defer closeTestResource(t, h2)
 
 	if h2.RootGUID != guid1 {
 		t.Errorf("root GUID changed across restarts: %x vs %x", guid1, h2.RootGUID)
@@ -94,7 +109,7 @@ func TestWALMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var mode string
 	if err := h.DB().QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -111,7 +126,7 @@ func TestBusyTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var timeout int
 	if err := h.DB().QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
@@ -128,7 +143,7 @@ func TestSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var version int
 	if err := h.DB().QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -147,9 +162,9 @@ func TestSchemaVersionTooNew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Exec("CREATE TABLE schema_version (version INTEGER NOT NULL)")
-	db.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion+1)
-	db.Close()
+	execSQL(t, db, "CREATE TABLE schema_version (version INTEGER NOT NULL)")
+	execSQL(t, db, "INSERT INTO schema_version (version) VALUES (?)", schemaVersion+1)
+	closeTestResource(t, db)
 
 	_, err = Open("Machine", path)
 	if err == nil {
@@ -163,7 +178,7 @@ func TestTablesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	tables := []string{"schema_version", "keys", "path_entries", "values", "blanket_tombstones"}
 	for _, table := range tables {
@@ -186,7 +201,7 @@ func TestVolatileTablesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	// Volatile tables are in the 'volatile' attached database.
 	// "values" is a SQLite keyword and must be bracket-escaped.
@@ -210,7 +225,7 @@ func TestRootKeySD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var sdBytes []byte
 	err = h.DB().QueryRow("SELECT sd FROM keys WHERE guid = ?", h.RootGUID[:]).Scan(&sdBytes)
@@ -240,7 +255,7 @@ func TestRootKeyProperties(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var name string
 	var nameFolded string
@@ -298,22 +313,26 @@ func TestCrashRecoveryOrphanedGUID(t *testing.T) {
 		t.Fatalf("insert orphan value: %v", err)
 	}
 
-	h.Close()
+	closeTestResource(t, h)
 
 	// Reopen — crash recovery should clean the orphan.
 	h2, err := Open("Machine", path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer h2.Close()
+	defer closeTestResource(t, h2)
 
 	var count int
-	h2.DB().QueryRow("SELECT COUNT(*) FROM keys WHERE guid = ?", orphanGUID[:]).Scan(&count)
+	if err := h2.DB().QueryRow("SELECT COUNT(*) FROM keys WHERE guid = ?", orphanGUID[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("orphaned key was not cleaned up")
 	}
 
-	h2.DB().QueryRow("SELECT COUNT(*) FROM [values] WHERE key_guid = ?", orphanGUID[:]).Scan(&count)
+	if err := h2.DB().QueryRow("SELECT COUNT(*) FROM [values] WHERE key_guid = ?", orphanGUID[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("orphaned key's values were not cleaned up")
 	}
@@ -343,17 +362,19 @@ func TestCrashRecoveryPreservesNonOrphans(t *testing.T) {
 		t.Fatalf("insert path entry: %v", err)
 	}
 
-	h.Close()
+	closeTestResource(t, h)
 
 	// Reopen — non-orphan should survive.
 	h2, err := Open("Machine", path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer h2.Close()
+	defer closeTestResource(t, h2)
 
 	var count int
-	h2.DB().QueryRow("SELECT COUNT(*) FROM keys WHERE guid = ?", childGUID[:]).Scan(&count)
+	if err := h2.DB().QueryRow("SELECT COUNT(*) FROM keys WHERE guid = ?", childGUID[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 1 {
 		t.Error("non-orphaned key was incorrectly removed")
 	}
@@ -365,7 +386,7 @@ func TestMaxSequenceEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	seq, err := h.MaxSequence()
 	if err != nil {
@@ -382,19 +403,19 @@ func TestMaxSequenceWithData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	// Insert entries with known sequences.
 	guid := h.RootGUID[:]
-	h.DB().Exec(`
+	execSQL(t, h.DB(), `
 		INSERT INTO path_entries (parent_guid, child_name, child_name_folded, layer, target_type, target_guid, sequence)
 		VALUES (?, 'a', 'a', 'base', 0, ?, 42)
 	`, guid, guid)
-	h.DB().Exec(`
+	execSQL(t, h.DB(), `
 		INSERT INTO [values] (key_guid, name, name_folded, layer, type, data, sequence)
 		VALUES (?, 'v', 'v', 'base', 1, X'00', 100)
 	`, guid)
-	h.DB().Exec(`
+	execSQL(t, h.DB(), `
 		INSERT INTO blanket_tombstones (key_guid, layer, sequence)
 		VALUES (?, 'layer1', 7)
 	`, guid)
@@ -414,7 +435,7 @@ func TestForeignKeysEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var fk int
 	if err := h.DB().QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil {
@@ -440,7 +461,7 @@ func TestSchemaVersionSingleRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	var count int
 	if err := h.DB().QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
@@ -457,13 +478,13 @@ func TestRootKeyGUIDIsRandom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer h1.Close()
+	defer closeTestResource(t, h1)
 
 	h2, err := Open("B", tempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer h2.Close()
+	defer closeTestResource(t, h2)
 
 	if h1.RootGUID == h2.RootGUID {
 		t.Error("two databases got the same root GUID")

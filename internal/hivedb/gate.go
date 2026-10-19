@@ -5,6 +5,12 @@ import (
 	"sync"
 )
 
+// Named access modes keep Acquire calls explicit without changing its boolean API.
+const (
+	ReadAccess  = false
+	WriteAccess = true
+)
+
 // Gate excludes publication (including non-transactional writes) from reads.
 // It is held for an RSI operation, never for the lifetime of a transaction.
 // SQLite establishes snapshots independently for attached WAL databases; the
@@ -17,6 +23,7 @@ type Gate struct {
 	changed                 chan struct{}
 }
 
+// notify must be called with mu held; it wakes every waiter to recheck eligibility.
 func (g *Gate) notify() {
 	if g.changed != nil {
 		close(g.changed)
@@ -24,6 +31,9 @@ func (g *Gate) notify() {
 	}
 }
 
+// Acquire obtains a read or write publication guard, waiting only until ctx expires.
+// A successful caller must invoke the returned release function exactly once.
+// Writers take priority over new readers, so sustained reads cannot starve publication.
 func (g *Gate) Acquire(ctx context.Context, write bool) (func(), error) {
 	g.mu.Lock()
 	if write {

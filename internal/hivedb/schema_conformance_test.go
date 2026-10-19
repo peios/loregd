@@ -27,7 +27,7 @@ func TestSchemaVersionBelowOneRequiresMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial Open: %v", err)
 	}
-	h.Close()
+	closeTestResource(t, h)
 
 	// Drop the version below 1. Everything else about the database is intact,
 	// so the version check is the only thing that can fail the reopen.
@@ -38,7 +38,7 @@ func TestSchemaVersionBelowOneRequiresMigration(t *testing.T) {
 	if _, err := db.Exec("UPDATE schema_version SET version = 0"); err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	closeTestResource(t, db)
 
 	_, err = Open("Machine", path)
 	if err == nil {
@@ -62,7 +62,7 @@ func TestSchemaVersionSecondRowNotDetected(t *testing.T) {
 		t.Fatalf("initial Open: %v", err)
 	}
 	root := h.RootGUID
-	h.Close()
+	closeTestResource(t, h)
 
 	// Add a second row claiming a future version. The first row (the supported
 	// version, inserted at creation) still sits ahead of it by rowid.
@@ -73,13 +73,13 @@ func TestSchemaVersionSecondRowNotDetected(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion+1); err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	closeTestResource(t, db)
 
 	h2, err := Open("Machine", path)
 	if err != nil {
 		t.Fatalf("a second version row should be ignored, not fail startup: %v", err)
 	}
-	defer h2.Close()
+	defer closeTestResource(t, h2)
 	if h2.RootGUID != root {
 		t.Errorf("root GUID changed across the reopen: %x vs %x", root, h2.RootGUID)
 	}
@@ -96,7 +96,7 @@ func TestSchemaVersionMissingTableStampedUnvalidated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial Open: %v", err)
 	}
-	h.Close()
+	closeTestResource(t, h)
 
 	// Remove the version table and plant a table that a genuine version-1
 	// database would never carry. If the reopen validated the layout it would
@@ -111,13 +111,13 @@ func TestSchemaVersionMissingTableStampedUnvalidated(t *testing.T) {
 	if _, err := db.Exec("CREATE TABLE stale_marker (x INTEGER)"); err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	closeTestResource(t, db)
 
 	h2, err := Open("Machine", path)
 	if err != nil {
 		t.Fatalf("a database without a version table should be stamped, not fail: %v", err)
 	}
-	defer h2.Close()
+	defer closeTestResource(t, h2)
 
 	var version int
 	if err := h2.DB().QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -151,7 +151,7 @@ func TestEachSQLHandleHasOneConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer h.Close()
+	defer closeTestResource(t, h)
 
 	if got := h.WriteDB().Stats().MaxOpenConnections; got != 1 {
 		t.Errorf("write handle MaxOpenConnections = %d, want 1", got)
@@ -166,7 +166,7 @@ func TestEachSQLHandleHasOneConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSnapshotConn: %v", err)
 	}
-	defer snap.Close()
+	defer closeTestResource(t, snap)
 	if got := snap.Stats().MaxOpenConnections; got != 1 {
 		t.Errorf("snapshot handle MaxOpenConnections = %d, want 1", got)
 	}

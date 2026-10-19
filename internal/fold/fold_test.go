@@ -171,7 +171,7 @@ func TestMatchesCaseFoldingTxt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; scanner reports any read failure.
 	want := map[rune]rune{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -196,6 +196,9 @@ func TestMatchesCaseFoldingTxt(t *testing.T) {
 			t.Fatal(err)
 		}
 		want[rune(src)] = rune(dst)
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if len(want) != caseFoldMappings {
 		t.Fatalf("%s has %d C+S rows, table was generated from %d", path, len(want), caseFoldMappings)

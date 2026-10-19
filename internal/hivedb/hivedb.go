@@ -20,18 +20,23 @@ import (
 	"sync/atomic"
 	"time"
 
+	"modernc.org/sqlite"
+
 	"github.com/peios/loregd/internal/fold"
 	"github.com/peios/loregd/internal/sd"
+)
 
-	"modernc.org/sqlite"
+const (
+	maxReadConnections    = 16
+	connectionOpenTimeout = 25 * time.Second
 )
 
 // ReadPoolSize returns the number of read connections per hive.
 // Uses the number of available CPU cores, capped at 16, per spec.
 func ReadPoolSize() int {
 	n := runtime.NumCPU()
-	if n > 16 {
-		n = 16
+	if n > maxReadConnections {
+		n = maxReadConnections
 	}
 	if n < 1 {
 		n = 1
@@ -70,7 +75,7 @@ func OpenIn(name, path, volatileRoot string) (_ *HiveDB, err error) {
 	}
 	defer func() {
 		if err != nil {
-			os.RemoveAll(volatileDir)
+			_ = os.RemoveAll(volatileDir) // Preserve the primary startup error.
 		}
 	}()
 	volatilePath := filepath.Join(volatileDir, "volatile.db")
@@ -92,36 +97,17 @@ func OpenIn(name, path, volatileRoot string) (_ *HiveDB, err error) {
 		return nil, fmt.Errorf("open write connection for %s: %w", name, err)
 	}
 
-	if err := ensureSchema(writeDB); err != nil {
-		writeDB.Close()
-		return nil, fmt.Errorf("schema setup for %s: %w", name, err)
-	}
-
-	rootGUID, err := ensureRootKey(writeDB, name)
+	rootGUID, err := initializeHive(writeDB, name)
 	if err != nil {
-		writeDB.Close()
-		return nil, fmt.Errorf("root key setup for %s: %w", name, err)
+		// Keep the initialization failure; this connection will not be reused.
+		_ = writeDB.Close()
+		return nil, err
 	}
 
-	if err := cleanOrphans(writeDB); err != nil {
-		writeDB.Close()
-		return nil, fmt.Errorf("crash recovery for %s: %w", name, err)
-	}
-
-	// Read pool: multiple connections for concurrent reads.
-	poolSize := ReadPoolSize()
-	readDBs := make([]*sql.DB, 0, poolSize)
-	for range poolSize {
-		rdb, err := openConn(path, volatilePath)
-		if err != nil {
-			// Close already-opened connections.
-			for _, r := range readDBs {
-				r.Close()
-			}
-			writeDB.Close()
-			return nil, fmt.Errorf("open read connection for %s: %w", name, err)
-		}
-		readDBs = append(readDBs, rdb)
+	readDBs, err := openReadPool(path, volatilePath)
+	if err != nil {
+		_ = writeDB.Close() // Preserve the read-pool startup failure.
+		return nil, fmt.Errorf("open read connection for %s: %w", name, err)
 	}
 
 	return &HiveDB{
@@ -135,8 +121,35 @@ func OpenIn(name, path, volatileRoot string) (_ *HiveDB, err error) {
 	}, nil
 }
 
-// openConn opens a single SQLite connection with WAL, foreign keys,
-// and volatile store attached.
+func initializeHive(db *sql.DB, name string) ([16]byte, error) {
+	if err := ensureSchema(db); err != nil {
+		return [16]byte{}, fmt.Errorf("schema setup for %s: %w", name, err)
+	}
+	rootGUID, err := ensureRootKey(db, name)
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("root key setup for %s: %w", name, err)
+	}
+	if err := cleanOrphans(db); err != nil {
+		return [16]byte{}, fmt.Errorf("crash recovery for %s: %w", name, err)
+	}
+	return rootGUID, nil
+}
+
+func openReadPool(path, volatilePath string) ([]*sql.DB, error) {
+	connections := make([]*sql.DB, 0, ReadPoolSize())
+	for range cap(connections) {
+		connection, err := openConn(path, volatilePath)
+		if err != nil {
+			for _, opened := range connections {
+				_ = opened.Close() // Discard partial setup, preserving the opening error.
+			}
+			return nil, err
+		}
+		connections = append(connections, connection)
+	}
+	return connections, nil
+}
+
 // connector initializes every physical connection, including replacements after
 // cancellation or an uncertain rollback. ATTACH is connection-local state.
 type connector struct {
@@ -155,35 +168,49 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 	q := conn.(sqlite.ExecQuerierContext)
-	fail := func(err error) (driver.Conn, error) { conn.Close(); return nil, err }
+	fail := func(err error) (driver.Conn, error) {
+		_ = conn.Close() // Preserve the configuration error; this connection is unusable.
+		return nil, err
+	}
 	for _, statement := range []string{"PRAGMA busy_timeout=0", "PRAGMA foreign_keys=ON"} {
 		if _, err := q.ExecContext(ctx, statement, nil); err != nil {
 			return fail(err)
 		}
 	}
-	if _, err := q.ExecContext(ctx, "ATTACH ? AS volatile", []driver.NamedValue{{Ordinal: 1, Value: c.volatilePath}}); err != nil {
+	attachment := []driver.NamedValue{{Ordinal: 1, Value: c.volatilePath}}
+	if _, err := q.ExecContext(ctx, "ATTACH ? AS volatile", attachment); err != nil {
 		return fail(err)
 	}
 	for _, schema := range []string{"main", "volatile"} {
-		rows, err := q.QueryContext(ctx, "PRAGMA "+schema+".journal_mode=wal", nil)
-		if err != nil {
+		if err := enableWAL(ctx, q, schema); err != nil {
 			return fail(err)
-		}
-		values := make([]driver.Value, 1)
-		err = rows.Next(values)
-		rows.Close()
-		if err != nil {
-			return fail(err)
-		}
-		if values[0] != "wal" {
-			return fail(fmt.Errorf("%s journal mode is %v", schema, values[0]))
 		}
 	}
 	return conn, nil
 }
 
+// enableWAL accepts only the fixed main/volatile schema names from Connect.
+func enableWAL(ctx context.Context, connection sqlite.ExecQuerierContext, schema string) error {
+	rows, err := connection.QueryContext(ctx, "PRAGMA "+schema+".journal_mode=wal", nil)
+	if err != nil {
+		return err
+	}
+	values := make([]driver.Value, 1)
+	err = rows.Next(values)
+	// The single result row is consumed; closing it cannot commit a transaction.
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if values[0] != "wal" {
+		return fmt.Errorf("%s journal mode is %v", schema, values[0])
+	}
+	return nil
+}
+
+// openConn opens one initialized SQLite connection with a bounded startup wait.
 func openConn(path, volatilePath string) (*sql.DB, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), connectionOpenTimeout)
 	defer cancel()
 	return openConnContext(ctx, path, volatilePath)
 }
@@ -192,7 +219,7 @@ func openConnContext(ctx context.Context, path, volatilePath string) (*sql.DB, e
 	db := sql.OpenDB(&connector{path: path, volatilePath: volatilePath, driver: &sqlite.Driver{}})
 	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close() // Preserve the connection failure.
 		return nil, err
 	}
 	return db, nil
@@ -281,39 +308,58 @@ func ensureSchema(db *sql.DB) error {
 	}
 
 	if tableExists == 0 {
-		// First boot: create schema and version in a single transaction
-		// so a crash cannot leave the database half-initialized.
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin schema tx: %w", err)
+		if err := createSchema(db); err != nil {
+			return err
 		}
-		defer tx.Rollback()
-		if _, err := tx.Exec(schemaDDL); err != nil {
-			return fmt.Errorf("create schema: %w", err)
-		}
-		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion); err != nil {
-			return fmt.Errorf("insert schema version: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit schema: %w", err)
-		}
-	} else {
-		var version int
-		if err := db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
-			return fmt.Errorf("read schema version: %w", err)
-		}
-		if version > schemaVersion {
-			return fmt.Errorf("database schema version %d is newer than loregd supports (%d)", version, schemaVersion)
-		}
-		if version < schemaVersion {
-			return fmt.Errorf("database schema version %d requires migration (loregd supports %d, no migrations implemented)", version, schemaVersion)
-		}
+	} else if err := validateSchemaVersion(db); err != nil {
+		return err
 	}
 
 	if _, err := db.Exec(volatileSchemaDDL); err != nil {
 		return fmt.Errorf("create volatile schema: %w", err)
 	}
 
+	return nil
+}
+
+func createSchema(db *sql.DB) error {
+	// First boot: create schema and version in a single transaction
+	// so a crash cannot leave the database half-initialized.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin schema tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // Already committed or preserving the operation error.
+	if _, err := tx.Exec(schemaDDL); err != nil {
+		return fmt.Errorf("create schema: %w", err)
+	}
+	if _, err := tx.Exec(
+		"INSERT INTO schema_version (version) VALUES (?)", schemaVersion,
+	); err != nil {
+		return fmt.Errorf("insert schema version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema: %w", err)
+	}
+	return nil
+}
+
+func validateSchemaVersion(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version > schemaVersion {
+		return fmt.Errorf(
+			"database schema version %d is newer than loregd supports (%d)", version, schemaVersion,
+		)
+	}
+	if version < schemaVersion {
+		return fmt.Errorf(
+			"database schema version %d requires migration "+
+				"(loregd supports %d, no migrations implemented)", version, schemaVersion,
+		)
+	}
 	return nil
 }
 
@@ -355,7 +401,7 @@ func cleanOrphans(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("clean orphans begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // Already committed or preserving the operation error.
 
 	if _, err := tx.Exec(`
 		DELETE FROM main.[values] WHERE key_guid IN (

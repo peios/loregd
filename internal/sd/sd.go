@@ -8,7 +8,8 @@ package sd
 
 import "encoding/binary"
 
-// Well-known SIDs used in default hive root SDs.
+// Well-known SIDs used in default hive root SDs. These package-owned templates
+// are initialized once and must not be mutated, including their subauthority slices.
 var (
 	// S-1-5-18 (Local System)
 	SIDSystem = SID{
@@ -52,6 +53,8 @@ const (
 
 // SD control flags.
 const (
+	sdHeaderSize   = 20
+	aclHeaderSize  = 8
 	seSelfRelative = 0x8000
 	seDaclPresent  = 0x0004
 )
@@ -79,6 +82,7 @@ func (s *SID) Size() int {
 }
 
 // Marshal appends the binary SID to dst and returns the extended slice.
+// This builder accepts the trusted well-known SID templates above, not unvalidated input.
 func (s *SID) Marshal(dst []byte) []byte {
 	dst = append(dst, s.Revision)
 	dst = append(dst, byte(len(s.SubAuthorities)))
@@ -129,14 +133,12 @@ func DefaultHiveRootSD() []byte {
 	}
 
 	// Compute sizes.
-	aclHeaderSize := 8
 	totalACESize := 0
 	for i := range aces {
 		totalACESize += aces[i].size()
 	}
 	aclSize := aclHeaderSize + totalACESize
 
-	sdHeaderSize := 20
 	offsetDacl := uint32(sdHeaderSize)
 	offsetOwner := uint32(sdHeaderSize + aclSize)
 	offsetGroup := offsetOwner + uint32(owner.Size())

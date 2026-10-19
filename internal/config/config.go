@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ type HiveConfig struct {
 // Returns the parsed hive configurations or an error.
 func Parse(args []string) ([]HiveConfig, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("no hive arguments provided")
+		return nil, errors.New("no hive arguments provided")
 	}
 
 	seen := make(map[string]bool) // folded name → already seen
