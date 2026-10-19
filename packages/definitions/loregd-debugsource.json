@@ -1,0 +1,19 @@
+{
+    "package": {
+        "name": "dev.peios.loregd-debugsource",
+        "version": "0.21.13-1",
+        "architecture": "noarch",
+        "license": "MIT AND BSD-2-Clause AND BSD-3-Clause AND (MIT OR GPL-2.0-only WITH Linux-syscall-note)",
+        "license_class": "free",
+        "homepage": "https://github.com/peios/loregd",
+        "description": "Debug sources for the local registry daemon"
+    },
+    "files": {
+        "source:LICENSE": "usr/share/licenses/dev.peios.loregd-debugsource/LICENSE",
+        "stage:licenses/**": "usr/share/licenses/dev.peios.loregd-debugsource/third-party",
+        "stage:usr/src/debug/**": "usr/src/debug"
+    },
+    "dependencies": {
+        "dev.peios.loregd-debuginfo": "= 0.21.13-1"
+    }
+}

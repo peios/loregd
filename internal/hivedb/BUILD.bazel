@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "gate.go",
+        "hivedb.go",
+        "runtime.go",
+        "schema.go",
+    ],
+    importpath = "github.com/peios/loregd/internal/hivedb",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/fold:go_default_library",
+        "//internal/sd:go_default_library",
+        "@com_github_peios_peios_go//file:go_default_library",
+        "@com_github_peios_peios_go//security:go_default_library",
+        "@org_golang_x_sys//unix:go_default_library",
+        "@org_modernc_sqlite//:go_default_library",
+    ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = [
+        "hivedb_test.go",
+        "runtime_descriptor_test.go",
+        "schema_conformance_test.go",
+        "volatile_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = ["@com_github_peios_peios_go//security:go_default_library"],
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(["*.go"]) + ["BUILD.bazel"],
+    visibility = ["//visibility:public"],
+)

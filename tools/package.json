@@ -1,0 +1,9 @@
+{
+    "name": "loregd-style-tools",
+    "version": "1.0.0",
+    "private": true,
+    "devDependencies": {
+        "prettier": "3.9.10",
+        "eslint": "10.12.0"
+    }
+}

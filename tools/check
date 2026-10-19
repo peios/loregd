@@ -1,0 +1,9 @@
+#!/bin/sh
+# Bazel builds the daemon and packages; Go's race detector checks concurrency.
+set -eu
+repo=$(CDPATH="" cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo"
+python3 tools/style-check.py
+./bazel test //...
+./bazel build //:packages
+./bazel test --config=race //:go_default_test //internal/...

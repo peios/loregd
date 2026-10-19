@@ -1,0 +1,13 @@
+common --enable_bzlmod
+build --jobs=4
+build --compilation_mode=opt
+build --incompatible_strict_action_env
+build --action_env=PATH=/usr/bin:/bin
+test --test_output=errors
+build:race --@rules_go//go/config:race
+build:peios --define=peios_native=true
+build:peios --extra_toolchains=@peios_rust//:toolchain
+build:peios --spawn_strategy=local
+build:peios --genrule_strategy=local
+build:peios --symlink_prefix=/
+build --strip=never

@@ -1,0 +1,72 @@
+{
+  "github.com/dustin/go-humanize": {
+    "files": {
+      "LICENSE": "a973b4498c13eb74baa2a8e5c351426a6826f2fcdd909916dbe53ee2e755fd71"
+    },
+    "version": "v1.0.1"
+  },
+  "github.com/google/uuid": {
+    "files": {
+      "LICENSE": "0a8d61ed3cbfd5312326e8126c31ce9c627a283adc99131b56896d29ada04b2d"
+    },
+    "version": "v1.6.0"
+  },
+  "github.com/peios/peios-go": {
+    "files": {
+      "LICENSE": "f2e13dfaed084ae47cd23808d8015fa8d04de7ec777c66437cf2c54949976aa4",
+      "internal/uapi/LICENSE": "86624961211f9a304809a088609e2b7ceb08dac0f7468c72132329e962b52a8f",
+      "internal/uapi/LICENSE.GPL-2.0-only": "8780e78a1a737e127f25a65f6d95269bffd36158dc261114de7859b490bfc5aa",
+      "internal/uapi/LICENSE.Linux-syscall-note": "9b4084655174654608fd037e9ddb4feeadfada01cd042e9c17b05aa7105b2b9f"
+    },
+    "version": "v0.0.0-20261013210002-936b68d020a5"
+  },
+  "github.com/remyoudompheng/bigfft": {
+    "files": {
+      "LICENSE": "dd26a7abddd02e2d0aba97805b31f248ef7835d9e10da289b22e3b8ab78b324d"
+    },
+    "version": "v0.0.0-20230129092748-24d4a6f8daec"
+  },
+  "go": {
+    "files": {
+      "LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    "version": "1.26.8"
+  },
+  "golang.org/x/sys": {
+    "files": {
+      "LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+      "PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+    },
+    "version": "v0.42.0"
+  },
+  "modernc.org/libc": {
+    "files": {
+      "LICENSE": "95ff867eb55a56935fa7492406cfa953fb7c13ca73f4c0a86ae05756b4605600",
+      "LICENSE-3RD-PARTY.md": "f597097efe3d97021f89170746bd3a0fb9a8b6fb26b82043ed68a4e0283bee6c",
+      "testdata/nsz.repo.hu/libc-test/src/math/crlibm/COPYING": "dcc100d4161cc0b7177545ab6e47216f84857cda3843847c792a25289852dcaa"
+    },
+    "version": "v1.70.0"
+  },
+  "modernc.org/mathutil": {
+    "files": {
+      "LICENSE": "bfa9bf72a72ca009fd62a8f84fca3dca67e51d93af96352723646599898b6cf5",
+      "mersenne/LICENSE": "c05630f9ca899ea094620d37daea6ba66f99adbf9268ea5fea9db607e1102bd9"
+    },
+    "version": "v1.7.1"
+  },
+  "modernc.org/memory": {
+    "files": {
+      "LICENSE": "59895e669f48f168b6b858358f6005779cdf40a265f7828813061b56af67b496",
+      "LICENSE-GO": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "LICENSE-LOGO": "5ae5bee3072a841376451b48d8cfcec7188e10543926d5870828d36c8a750dc5",
+      "LICENSE-MMAP-GO": "c2eba69f20d05414538c3a5df7694dde392e065ff70882e1625e90f5d6659fff"
+    },
+    "version": "v1.11.0"
+  },
+  "modernc.org/sqlite": {
+    "files": {
+      "LICENSE": "c6fe05491a60ae13bcd223088d2705e36dede24e5587226231d2459ada5c4822"
+    },
+    "version": "v1.48.1"
+  }
+}

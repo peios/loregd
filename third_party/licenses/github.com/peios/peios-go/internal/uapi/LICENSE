@@ -1,0 +1,17 @@
+SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note
+
+PKM Go UAPI bindings
+====================
+
+The Go declarations in this module are generated mechanically from the PKM
+userspace ABI headers under uapi/pkm. Those headers are the source of truth,
+and this generated mirror carries the same licence:
+
+    GPL-2.0-only WITH Linux-syscall-note
+
+The complete GPL-2.0-only text is in LICENSE.GPL-2.0-only. The complete
+Linux-syscall-note exception is in LICENSE.Linux-syscall-note. The exception
+means normal userspace programs may use this UAPI without becoming derivative
+works of the kernel.
+
+Regenerate zconst.go and ztypes.go with gen.sh; do not edit them by hand.
