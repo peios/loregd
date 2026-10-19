@@ -24,14 +24,14 @@ func queryFirstValueData(t *testing.T, h *Handler, hdr rsi.RequestHeader, guid r
 		t.Fatalf("query values: status = %d", status)
 	}
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count == 0 {
 		return "", false
 	}
-	_, _ = d.String() // value_name
-	_, _ = d.String() // layer_name
-	_, _ = d.Uint32() // type
-	data, _ := d.Blob()
+	_ = mustDecode(t, d.String) // value_name
+	_ = mustDecode(t, d.String) // layer_name
+	_ = mustDecode(t, d.Uint32) // type
+	data := mustDecode(t, d.Blob)
 	return string(data), true
 }
 
@@ -61,8 +61,12 @@ func TestReadOnlyTxnRejectsMutation(t *testing.T) {
 
 	// Nothing should have been written.
 	var values, keys int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE key_guid = ? AND name_folded = ?`, guid[:], "nope").Scan(&values)
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.keys WHERE name_folded = ?`, "nocreate").Scan(&keys)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE key_guid = ? AND name_folded = ?`, guid[:], "nope").Scan(&values); err != nil {
+		t.Fatal(err)
+	}
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.keys WHERE name_folded = ?`, "nocreate").Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
 	if values != 0 {
 		t.Errorf("value count = %d, want 0 (no mutation)", values)
 	}
@@ -70,7 +74,9 @@ func TestReadOnlyTxnRejectsMutation(t *testing.T) {
 		t.Errorf("key count = %d, want 0 (no mutation)", keys)
 	}
 
-	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(81))
+	if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(81)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 }
 
 // TestReadOnlyTxnSnapshotIsolation: reads tagged with a read-only transaction
@@ -104,7 +110,9 @@ func TestReadOnlyTxnSnapshotIsolation(t *testing.T) {
 	}
 
 	// Releasing the snapshot via ABORT, a fresh read sees v2.
-	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(80))
+	if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(80)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	if val, ok := queryFirstValueData(t, h, rsi.RequestHeader{}, guid, "Snap"); !ok || val != "v2" {
 		t.Errorf("post-abort read = %q (present=%v), want v2", val, ok)
 	}
@@ -145,7 +153,9 @@ func TestReadOnlyTxnReleaseAllowsReuse(t *testing.T) {
 	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxnMode(90, rsi.TxnReadOnly)); status != rsi.StatusOK {
 		t.Fatalf("begin #3 (reused ID after commit): status = %d", status)
 	}
-	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(90))
+	if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(90)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 }
 
 // TestReadOnlyTxnRejectsDeleteLayerAndFlush: RSI_DELETE_LAYER and RSI_FLUSH
@@ -183,13 +193,17 @@ func TestReadOnlyTxnRejectsDeleteLayerAndFlush(t *testing.T) {
 	// is the defect, and a check that only asserted the code would pass while
 	// the rows were still being removed.
 	var entries int
-	hive.WriteDB().QueryRow(
-		`SELECT COUNT(*) FROM main.path_entries WHERE layer = ?`, "role-x").Scan(&entries)
+	if err := hive.WriteDB().QueryRow(
+		`SELECT COUNT(*) FROM main.path_entries WHERE layer = ?`, "role-x").Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
 	if entries != 1 {
 		t.Errorf("role-x path entries = %d, want 1 (nothing deleted)", entries)
 	}
 
-	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(91))
+	if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(91)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 }
 
 // TestDeleteLayerDeclinesWhileATransactionHoldsAWrite: each hive allows one
@@ -217,7 +231,9 @@ func TestDeleteLayerDeclinesWhileATransactionHoldsAWrite(t *testing.T) {
 		t.Errorf("delete layer while a write is bound: status = %d, want StatusTxnBusy", status)
 	}
 
-	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(92))
+	if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(92)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 
 	// Once the transaction is gone it proceeds normally.
 	status, _ = h.handleDeleteLayer(rsi.RequestHeader{}, encodeDeleteLayer("role-x"))

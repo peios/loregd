@@ -42,33 +42,33 @@ func TestQueryValuesSingle(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 1 {
 		t.Fatalf("entry count = %d, want 1", count)
 	}
-	vn, _ := d.String()
+	vn := mustDecode(t, d.String)
 	if vn != "Name" {
 		t.Errorf("value name = %q", vn)
 	}
-	ln, _ := d.String()
+	ln := mustDecode(t, d.String)
 	if ln != "base" {
 		t.Errorf("layer = %q", ln)
 	}
-	vt, _ := d.Uint32()
+	vt := mustDecode(t, d.Uint32)
 	if vt != 1 {
 		t.Errorf("type = %d", vt)
 	}
-	data, _ := d.Blob()
+	data := mustDecode(t, d.Blob)
 	if string(data) != "hello" {
 		t.Errorf("data = %q", data)
 	}
-	seq, _ := d.Uint64()
+	seq := mustDecode(t, d.Uint64)
 	if seq != 10 {
 		t.Errorf("sequence = %d", seq)
 	}
 
 	// Blanket count should be 0.
-	bc, _ := d.Uint32()
+	bc := mustDecode(t, d.Uint32)
 	if bc != 0 {
 		t.Errorf("blanket count = %d, want 0", bc)
 	}
@@ -84,7 +84,7 @@ func TestQueryValuesCaseInsensitive(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 1 {
 		t.Errorf("case-insensitive query: count = %d, want 1", count)
 	}
@@ -102,7 +102,7 @@ func TestQueryValuesAll(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 3 {
 		t.Errorf("query-all count = %d, want 3", count)
 	}
@@ -117,7 +117,7 @@ func TestQueryValuesEmpty(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 0 {
 		t.Errorf("count = %d, want 0", count)
 	}
@@ -128,7 +128,9 @@ func TestQueryValuesWithBlanketTombstone(t *testing.T) {
 	insertValue(t, hive, guid, "V", "base", 1, []byte("v"), 1)
 
 	// Add a blanket tombstone.
-	hive.WriteDB().Exec(`INSERT INTO main.blanket_tombstones (key_guid, layer, sequence) VALUES (?, 'gpo-1', 20)`, guid[:])
+	if _, err := hive.WriteDB().Exec(`INSERT INTO main.blanket_tombstones (key_guid, layer, sequence) VALUES (?, 'gpo-1', 20)`, guid[:]); err != nil {
+		t.Fatal(err)
+	}
 
 	status, payload := h.handleQueryValues(rsi.RequestHeader{}, encodeQueryValues(guid, "V", false))
 	if status != rsi.StatusOK {
@@ -136,7 +138,7 @@ func TestQueryValuesWithBlanketTombstone(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	entryCount, _ := d.Uint32()
+	entryCount := mustDecode(t, d.Uint32)
 	if entryCount != 1 {
 		t.Fatalf("entry count = %d", entryCount)
 	}
@@ -147,15 +149,15 @@ func TestQueryValuesWithBlanketTombstone(t *testing.T) {
 	d.Blob()   // data
 	d.Uint64() // sequence
 
-	blanketCount, _ := d.Uint32()
+	blanketCount := mustDecode(t, d.Uint32)
 	if blanketCount != 1 {
 		t.Fatalf("blanket count = %d, want 1", blanketCount)
 	}
-	bl, _ := d.String()
+	bl := mustDecode(t, d.String)
 	if bl != "gpo-1" {
 		t.Errorf("blanket layer = %q", bl)
 	}
-	bs, _ := d.Uint64()
+	bs := mustDecode(t, d.Uint64)
 	if bs != 20 {
 		t.Errorf("blanket sequence = %d", bs)
 	}
@@ -181,8 +183,10 @@ func TestSetValue(t *testing.T) {
 
 	var name string
 	var typ uint32
-	hive.WriteDB().QueryRow(`SELECT name, type FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
-		guid[:], "newval").Scan(&name, &typ)
+	if err := hive.WriteDB().QueryRow(`SELECT name, type FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
+		guid[:], "newval").Scan(&name, &typ); err != nil {
+		t.Fatal(err)
+	}
 	if name != "NewVal" {
 		t.Errorf("stored name = %q, want %q (case-preserving)", name, "NewVal")
 	}
@@ -201,8 +205,10 @@ func TestSetValueReplace(t *testing.T) {
 	}
 
 	var data []byte
-	hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
-		guid[:], "replace", "base").Scan(&data)
+	if err := hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
+		guid[:], "replace", "base").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
 	if string(data) != "new" {
 		t.Errorf("data = %q, want %q", data, "new")
 	}
@@ -218,8 +224,10 @@ func TestSetValueTombstone(t *testing.T) {
 	}
 
 	var typ uint32
-	hive.WriteDB().QueryRow(`SELECT type FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
-		guid[:], "dead").Scan(&typ)
+	if err := hive.WriteDB().QueryRow(`SELECT type FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
+		guid[:], "dead").Scan(&typ); err != nil {
+		t.Fatal(err)
+	}
 	if typ != 0xFFFF {
 		t.Errorf("type = %d, want 0xFFFF (REG_TOMBSTONE)", typ)
 	}
@@ -236,8 +244,10 @@ func TestSetValueCASSuccess(t *testing.T) {
 	}
 
 	var data []byte
-	hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
-		guid[:], "cas", "base").Scan(&data)
+	if err := hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
+		guid[:], "cas", "base").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
 	if string(data) != "new" {
 		t.Errorf("CAS updated data = %q, want %q", data, "new")
 	}
@@ -255,8 +265,10 @@ func TestSetValueCASMismatch(t *testing.T) {
 
 	// Value should be unchanged.
 	var data []byte
-	hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
-		guid[:], "cas", "base").Scan(&data)
+	if err := hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
+		guid[:], "cas", "base").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
 	if string(data) != "old" {
 		t.Errorf("value changed after CAS failure: %q", data)
 	}
@@ -296,16 +308,20 @@ func TestSetValueVolatileKey(t *testing.T) {
 
 	// Value should be in volatile database.
 	var name string
-	hive.WriteDB().QueryRow(`SELECT name FROM volatile.[values] WHERE key_guid = ? AND name_folded = ?`,
-		guid[:], "volval").Scan(&name)
+	if err := hive.WriteDB().QueryRow(`SELECT name FROM volatile.[values] WHERE key_guid = ? AND name_folded = ?`,
+		guid[:], "volval").Scan(&name); err != nil {
+		t.Fatal(err)
+	}
 	if name != "VolVal" {
 		t.Errorf("volatile value name = %q, want %q", name, "VolVal")
 	}
 
 	// Should NOT be in main database.
 	var count int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
-		guid[:], "volval").Scan(&count)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
+		guid[:], "volval").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Errorf("main value count = %d, want 0", count)
 	}
@@ -335,8 +351,10 @@ func TestSetValueCASInTransaction(t *testing.T) {
 
 	// Verify the committed value.
 	var data []byte
-	hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
-		guid[:], "txncas", "base").Scan(&data)
+	if err := hive.WriteDB().QueryRow(`SELECT data FROM main.[values] WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
+		guid[:], "txncas", "base").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
 	if string(data) != "updated" {
 		t.Errorf("data = %q, want %q", data, "updated")
 	}
@@ -362,7 +380,7 @@ func TestQueryValuesReadYourOwnWrites(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 1 {
 		t.Errorf("txn read-your-own-writes: count = %d, want 1", count)
 	}
@@ -373,7 +391,7 @@ func TestQueryValuesReadYourOwnWrites(t *testing.T) {
 		t.Fatalf("non-txn query: status = %d", status)
 	}
 	d = rsi.NewDecoder(payload)
-	count, _ = d.Uint32()
+	count = mustDecode(t, d.Uint32)
 	if count != 0 {
 		t.Errorf("non-txn isolation: count = %d, want 0", count)
 	}
@@ -405,7 +423,9 @@ func TestDeleteValueEntryVolatileKey(t *testing.T) {
 
 	// Value should be gone from volatile.
 	var count int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.[values] WHERE key_guid = ?`, guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.[values] WHERE key_guid = ?`, guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("volatile value entry not deleted")
 	}
@@ -426,14 +446,18 @@ func TestSetBlanketTombstoneVolatileKey(t *testing.T) {
 
 	// Blanket tombstone should be in volatile database.
 	var layer string
-	hive.WriteDB().QueryRow(`SELECT layer FROM volatile.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&layer)
+	if err := hive.WriteDB().QueryRow(`SELECT layer FROM volatile.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&layer); err != nil {
+		t.Fatal(err)
+	}
 	if layer != "gpo-1" {
 		t.Errorf("volatile blanket tombstone layer = %q, want %q", layer, "gpo-1")
 	}
 
 	// Should NOT be in main database.
 	var count int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Errorf("main blanket_tombstones count = %d, want 0", count)
 	}
@@ -459,8 +483,10 @@ func TestDeleteValueEntry(t *testing.T) {
 	}
 
 	var count int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
-		guid[:], "delme").Scan(&count)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE key_guid = ? AND name_folded = ?`,
+		guid[:], "delme").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("value entry not deleted")
 	}
@@ -486,7 +512,9 @@ func TestSetBlanketTombstone(t *testing.T) {
 
 	var layer string
 	var seq uint64
-	hive.WriteDB().QueryRow(`SELECT layer, sequence FROM main.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&layer, &seq)
+	if err := hive.WriteDB().QueryRow(`SELECT layer, sequence FROM main.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&layer, &seq); err != nil {
+		t.Fatal(err)
+	}
 	if layer != "gpo-1" {
 		t.Errorf("layer = %q", layer)
 	}
@@ -499,14 +527,18 @@ func TestRemoveBlanketTombstone(t *testing.T) {
 	h, hive, guid := setupKeyForValues(t)
 
 	// Set then remove.
-	h.handleSetBlanketTombstone(rsi.RequestHeader{}, encodeBlanketTombstone(guid, "gpo-1", true, 100))
+	if status, _ := h.handleSetBlanketTombstone(rsi.RequestHeader{}, encodeBlanketTombstone(guid, "gpo-1", true, 100)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	status, _ := h.handleSetBlanketTombstone(rsi.RequestHeader{}, encodeBlanketTombstone(guid, "gpo-1", false, 0))
 	if status != rsi.StatusOK {
 		t.Fatalf("remove: status = %d", status)
 	}
 
 	var count int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.blanket_tombstones WHERE key_guid = ?`, guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("blanket tombstone not removed")
 	}

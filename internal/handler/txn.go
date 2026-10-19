@@ -6,9 +6,10 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"sync"
+
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
-	"sync"
 
 	"github.com/peios/loregd/internal/hivedb"
 	"github.com/peios/loregd/internal/rsi"
@@ -21,13 +22,13 @@ var errReadOnlyTxn = errors.New("mutating operation on read-only transaction")
 
 // txnInfo tracks state for one active RSI transaction.
 type txnInfo struct {
-	session, lease, lifetime uint64
-	expired                  bool
-	cleanupStarted           bool
-	hive                     *hivedb.HiveDB // nil = unbound (no operation has bound a connection yet)
-	conn                     *sql.Conn      // pinned connection (write conn for RW, snapshot conn for RO)
-	operation                hivedb.Gate
-	binding                  bool // true while bind is in progress (prevents double-bind)
+	session, leaseNS, lifetimeNS uint64
+	expired                      bool
+	cleanupStarted               bool
+	hive                         *hivedb.HiveDB // nil = unbound (no operation has bound a connection yet)
+	conn                         *sql.Conn      // pinned connection (write conn for RW, snapshot conn for RO)
+	operation                    hivedb.Gate
+	binding                      bool // true while bind is in progress (prevents double-bind)
 
 	failed     bool    // interrupted operation; only abort may release this ID
 	readOnly   bool    // RSI_TXN_READ_ONLY: snapshot reads, mutations rejected
@@ -120,7 +121,7 @@ func (m *txnManager) getOrBindWrite(ctx context.Context, txnID uint64, hive *hiv
 	_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
 	if err != nil {
 		rollbackConn(conn)
-		conn.Close()
+		releaseConnection(conn)
 		m.mu.Lock()
 		info.binding = false
 		m.mu.Unlock()
@@ -156,7 +157,6 @@ func (m *txnManager) addAbortHook(txnID uint64, fn func()) {
 	}
 }
 
-// hiveBusy returns true if any transaction is bound to the given hive.
 // mutationAllowed reports whether a mutating operation tagged with txnID may
 // proceed, giving the same answers getOrBindWrite gives every handler that
 // routes through writeQ. A zero txnID is non-transactional and always allowed;
@@ -197,6 +197,7 @@ func (m *txnManager) anyWriteBound() bool {
 	return false
 }
 
+// hiveBusy reports whether a transaction holds this hive's write connection.
 func (m *txnManager) hiveBusy(hive *hivedb.HiveDB) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -259,34 +260,10 @@ func (m *txnManager) getReadQuerier(ctx context.Context, txnID uint64, hive *hiv
 	info.binding = true
 	m.mu.Unlock()
 
-	snapDB, err := hive.OpenSnapshotConn(ctx)
+	conn, snapDB, err := openPinnedSnapshot(ctx, hive)
 	if err != nil {
 		m.clearBinding(info)
-		return nil, false, fmt.Errorf("open snapshot connection: %w", err)
-	}
-	conn, err := snapDB.Conn(ctx)
-	if err != nil {
-		snapDB.Close()
-		m.clearBinding(info)
-		return nil, false, fmt.Errorf("acquire snapshot connection: %w", err)
-	}
-	// BEGIN DEFERRED alone fixes no snapshot. Read both schemas under the
-	// hive gate before releasing this request to a concurrent publisher.
-	if _, err := conn.ExecContext(ctx, "BEGIN DEFERRED"); err != nil {
-		rollbackConn(conn)
-		conn.Close()
-		snapDB.Close()
-		m.clearBinding(info)
-		return nil, false, fmt.Errorf("begin snapshot: %w", err)
-	}
-
-	var mainCount, volatileCount int
-	if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM main.keys), EXISTS(SELECT 1 FROM volatile.keys)").Scan(&mainCount, &volatileCount); err != nil {
-		rollbackConn(conn)
-		conn.Close()
-		snapDB.Close()
-		m.clearBinding(info)
-		return nil, false, fmt.Errorf("pin both snapshot stores: %w", err)
+		return nil, false, err
 	}
 
 	q := &connQuerier{conn: conn, ctx: ctx}
@@ -355,7 +332,7 @@ func (m *txnManager) commit(ctx context.Context, txnID uint64) error {
 		for _, fn := range info.onCommit {
 			fn()
 		}
-		info.conn.Close()
+		releaseConnection(info.conn)
 	}
 	m.mu.Lock()
 	delete(m.txns, txnID)
@@ -390,11 +367,11 @@ func (m *txnManager) abort(txnID uint64) {
 
 	if info.conn != nil {
 		rollbackConn(info.conn)
-		info.conn.Close()
+		releaseConnection(info.conn)
 	}
 	// Read-only snapshots run on a dedicated DB; close it too.
 	if info.snapshotDB != nil {
-		info.snapshotDB.Close()
+		closeSnapshotDatabase(info.snapshotDB)
 	}
 
 	// Run abort hooks after ROLLBACK so DB state is consistent
@@ -409,10 +386,10 @@ func (m *txnManager) abort(txnID uint64) {
 func releaseSnapshot(info *txnInfo) {
 	if info.conn != nil {
 		rollbackConn(info.conn)
-		info.conn.Close()
+		releaseConnection(info.conn)
 	}
 	if info.snapshotDB != nil {
-		info.snapshotDB.Close()
+		closeSnapshotDatabase(info.snapshotDB)
 	}
 }
 
@@ -431,15 +408,26 @@ func isBusy(err error) bool {
 	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
-func discardConn(conn *sql.Conn) { conn.Raw(func(any) error { return driver.ErrBadConn }) }
+func discardConn(conn *sql.Conn) {
+	// ErrBadConn tells database/sql to discard the physical connection. Raw
+	// returns that same sentinel; there is no additional recovery to perform.
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+}
+
+type operationMode uint8
+
+const (
+	normalOperation operationMode = iota
+	cleanupOperation
+)
 
 func (m *txnManager) lockOperation(ctx context.Context, id uint64) (func(), error) {
-	return m.lockOperationMode(ctx, id, false)
+	return m.lockOperationMode(ctx, id, normalOperation)
 }
 func (m *txnManager) lockOperationForCleanup(ctx context.Context, id uint64) (func(), error) {
-	return m.lockOperationMode(ctx, id, true)
+	return m.lockOperationMode(ctx, id, cleanupOperation)
 }
-func (m *txnManager) lockOperationMode(ctx context.Context, id uint64, cleanup bool) (func(), error) {
+func (m *txnManager) lockOperationMode(ctx context.Context, id uint64, mode operationMode) (func(), error) {
 	m.mu.Lock()
 	info := m.txns[id]
 	m.mu.Unlock()
@@ -452,7 +440,7 @@ func (m *txnManager) lockOperationMode(ctx context.Context, id uint64, cleanup b
 	}
 	m.mu.Lock()
 	current := m.txns[id]
-	expired := !cleanup && info.leaseExpired(rsi.MonotonicNS())
+	expired := mode != cleanupOperation && info.leaseExpired(rsi.MonotonicNS())
 	m.mu.Unlock()
 	if current != info || expired {
 		unlock()
@@ -502,9 +490,9 @@ func (m *txnManager) failInterrupted(id uint64) bool {
 		return false
 	}
 	rollbackConn(info.conn)
-	info.conn.Close()
+	releaseConnection(info.conn)
 	if info.snapshotDB != nil {
-		info.snapshotDB.Close()
+		closeSnapshotDatabase(info.snapshotDB)
 	}
 	m.mu.Lock()
 	info.conn = nil
@@ -531,4 +519,39 @@ func (m *txnManager) boundQuerier(id uint64, hive *hivedb.HiveDB, ctx context.Co
 		return &connQuerier{conn: info.conn, ctx: ctx}
 	}
 	return nil
+}
+
+// openPinnedSnapshot opens and reads both attached stores while the caller holds
+// the hive publication gate, fixing one coherent read-only view.
+func openPinnedSnapshot(ctx context.Context, hive *hivedb.HiveDB) (*sql.Conn, *sql.DB, error) {
+	snapDB, err := hive.OpenSnapshotConn(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open snapshot connection: %w", err)
+	}
+	conn, err := snapDB.Conn(ctx)
+	if err != nil {
+		closeSnapshotDatabase(snapDB)
+		return nil, nil, fmt.Errorf("acquire snapshot connection: %w", err)
+	}
+	// BEGIN DEFERRED alone fixes no snapshot. Read both schemas under the
+	// hive gate before releasing this request to a concurrent publisher.
+	if _, err := conn.ExecContext(ctx, "BEGIN DEFERRED"); err != nil {
+		rollbackConn(conn)
+		releaseConnection(conn)
+		closeSnapshotDatabase(snapDB)
+		return nil, nil, fmt.Errorf("begin snapshot: %w", err)
+	}
+
+	var mainCount, volatileCount int
+	err = conn.QueryRowContext(ctx, `
+        SELECT EXISTS(SELECT 1 FROM main.keys), EXISTS(SELECT 1 FROM volatile.keys)
+    `).Scan(&mainCount, &volatileCount)
+	if err != nil {
+		rollbackConn(conn)
+		releaseConnection(conn)
+		closeSnapshotDatabase(snapDB)
+		return nil, nil, fmt.Errorf("pin both snapshot stores: %w", err)
+	}
+
+	return conn, snapDB, nil
 }

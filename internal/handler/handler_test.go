@@ -18,7 +18,11 @@ func openTestHive(t *testing.T, name string) *hivedb.HiveDB {
 	if err != nil {
 		t.Fatalf("Open(%s): %v", name, err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() {
+		if err := h.Close(); err != nil {
+			t.Errorf("close test hive: %v", err)
+		}
+	})
 	return h
 }
 
@@ -105,7 +109,7 @@ func TestLookupEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want OK", status)
 	}
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 0 {
 		t.Errorf("entry count = %d, want 0", count)
 	}
@@ -128,20 +132,20 @@ func TestLookupFindsEntry(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 1 {
 		t.Fatalf("entry count = %d, want 1", count)
 	}
 
-	layer, _ := d.String()
+	layer := mustDecode(t, d.String)
 	if layer != "base" {
 		t.Errorf("layer = %q, want %q", layer, "base")
 	}
-	tt, _ := d.Uint8()
+	tt := mustDecode(t, d.Uint8)
 	if tt != rsi.TargetGUID {
 		t.Errorf("target_type = %d, want GUID", tt)
 	}
-	guid, _ := d.GUID()
+	guid := mustDecode(t, d.GUID)
 	if guid != childGUID {
 		t.Errorf("target_guid = %x, want %x", guid, childGUID)
 	}
@@ -165,7 +169,7 @@ func TestLookupSkipsEntryWhoseKeyIsNotYetVisible(t *testing.T) {
 		t.Fatalf("status = %d, want OK", status)
 	}
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 0 {
 		t.Fatalf("entry count = %d, want 0 (dangling entry dropped)", count)
 	}
@@ -177,7 +181,7 @@ func TestLookupSkipsEntryWhoseKeyIsNotYetVisible(t *testing.T) {
 		t.Fatalf("status after key insert = %d, want OK", status)
 	}
 	d = rsi.NewDecoder(payload)
-	count, _ = d.Uint32()
+	count = mustDecode(t, d.Uint32)
 	if count != 1 {
 		t.Fatalf("entry count after key insert = %d, want 1", count)
 	}
@@ -197,7 +201,7 @@ func TestLookupCaseInsensitive(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 1 {
 		t.Errorf("case-insensitive lookup failed: count = %d, want 1", count)
 	}
@@ -217,7 +221,9 @@ func TestCreateKey(t *testing.T) {
 
 	// Verify key exists in database.
 	var name string
-	hive.WriteDB().QueryRow("SELECT name FROM main.keys WHERE guid = ?", newGUID[:]).Scan(&name)
+	if err := hive.WriteDB().QueryRow("SELECT name FROM main.keys WHERE guid = ?", newGUID[:]).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
 	if name != "NewKey" {
 		t.Errorf("key name = %q, want %q", name, "NewKey")
 	}
@@ -233,7 +239,9 @@ func TestCreateKeyDuplicate(t *testing.T) {
 	root := rsi.GUID(hive.RootGUID)
 	guid := rsi.GUID{0xCC}
 
-	h.handleCreateKey(rsi.RequestHeader{}, encodeCreateKey(guid, "First", root, []byte{0x01}, false, false))
+	if status, _ := h.handleCreateKey(rsi.RequestHeader{}, encodeCreateKey(guid, "First", root, []byte{0x01}, false, false)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	status, _ := h.handleCreateKey(rsi.RequestHeader{}, encodeCreateKey(guid, "Second", root, []byte{0x01}, false, false))
 	if status != rsi.StatusAlreadyExists {
 		t.Errorf("duplicate create status = %d, want AlreadyExists", status)
@@ -252,7 +260,9 @@ func TestCreateKeyVolatile(t *testing.T) {
 
 	// Should be in volatile database.
 	var name string
-	hive.WriteDB().QueryRow("SELECT name FROM volatile.keys WHERE guid = ?", guid[:]).Scan(&name)
+	if err := hive.WriteDB().QueryRow("SELECT name FROM volatile.keys WHERE guid = ?", guid[:]).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
 	if name != "VolKey" {
 		t.Errorf("volatile key name = %q, want %q", name, "VolKey")
 	}
@@ -274,7 +284,7 @@ func TestReadKey(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	name, _ := d.String()
+	name := mustDecode(t, d.String)
 	if name != "TestKey" {
 		t.Errorf("name = %q, want %q", name, "TestKey")
 	}
@@ -304,7 +314,9 @@ func TestWriteKeySD(t *testing.T) {
 	}
 
 	var sd []byte
-	hive.WriteDB().QueryRow("SELECT sd FROM main.keys WHERE guid = ?", guid[:]).Scan(&sd)
+	if err := hive.WriteDB().QueryRow("SELECT sd FROM main.keys WHERE guid = ?", guid[:]).Scan(&sd); err != nil {
+		t.Fatal(err)
+	}
 	if len(sd) != 3 || sd[0] != 0xAA {
 		t.Errorf("sd = %x, want AABBCC", sd)
 	}
@@ -335,7 +347,9 @@ func TestDropKey(t *testing.T) {
 	insertPathEntry(t, hive, root, "DropMe", "base", guid, 1)
 
 	// Also insert a value for the key.
-	hive.WriteDB().Exec(`INSERT INTO main.[values] (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, 'v', 'v', 'base', 1, X'00', 1)`, guid[:])
+	if _, err := hive.WriteDB().Exec(`INSERT INTO main.[values] (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, 'v', 'v', 'base', 1, X'00', 1)`, guid[:]); err != nil {
+		t.Fatal(err)
+	}
 
 	h.guidCache.Store(guid, hive)
 
@@ -346,19 +360,25 @@ func TestDropKey(t *testing.T) {
 
 	// Key should be gone.
 	var count int
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.keys WHERE guid = ?", guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.keys WHERE guid = ?", guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("key not deleted")
 	}
 
 	// Path entries should be gone.
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE target_guid = ?", guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE target_guid = ?", guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("path entries not deleted")
 	}
 
 	// Values should be gone.
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.[values] WHERE key_guid = ?", guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.[values] WHERE key_guid = ?", guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("values not deleted")
 	}
@@ -393,8 +413,10 @@ func TestCreateEntry(t *testing.T) {
 	}
 
 	var count int
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
-		root[:], "child").Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
+		root[:], "child").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 1 {
 		t.Errorf("path entry count = %d, want 1", count)
 	}
@@ -408,7 +430,9 @@ func TestCreateEntryDuplicate(t *testing.T) {
 	insertKey(t, hive, childGUID, "Dup", root, false)
 	h.guidCache.Store(childGUID, hive)
 
-	h.handleCreateEntry(rsi.RequestHeader{}, encodeCreateEntry(root, "Dup", "base", childGUID, 1))
+	if status, _ := h.handleCreateEntry(rsi.RequestHeader{}, encodeCreateEntry(root, "Dup", "base", childGUID, 1)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	status, _ := h.handleCreateEntry(rsi.RequestHeader{}, encodeCreateEntry(root, "Dup", "base", childGUID, 2))
 	if status != rsi.StatusAlreadyExists {
 		t.Errorf("duplicate status = %d, want AlreadyExists", status)
@@ -431,8 +455,10 @@ func TestDeleteEntry(t *testing.T) {
 	}
 
 	var count int
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
-		root[:], "del").Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
+		root[:], "del").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("path entry not deleted")
 	}
@@ -460,7 +486,7 @@ func TestEnumChildrenEmpty(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 0 {
 		t.Errorf("child count = %d, want 0", count)
 	}
@@ -483,7 +509,7 @@ func TestEnumChildrenMultiple(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 2 {
 		t.Errorf("child count = %d, want 2", count)
 	}
@@ -734,10 +760,12 @@ func TestHideEntry(t *testing.T) {
 	// Verify HIDDEN entry exists.
 	var targetType int
 	var seq uint64
-	hive.WriteDB().QueryRow(`
+	if err := hive.WriteDB().QueryRow(`
 		SELECT target_type, sequence FROM main.path_entries
 		WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?
-	`, root[:], "hiddenchild", "role-x").Scan(&targetType, &seq)
+	`, root[:], "hiddenchild", "role-x").Scan(&targetType, &seq); err != nil {
+		t.Fatal(err)
+	}
 	if targetType != int(rsi.TargetHidden) {
 		t.Errorf("target_type = %d, want %d (HIDDEN)", targetType, rsi.TargetHidden)
 	}
@@ -762,10 +790,12 @@ func TestHideEntryReplacesExisting(t *testing.T) {
 	}
 
 	var targetType int
-	hive.WriteDB().QueryRow(`
+	if err := hive.WriteDB().QueryRow(`
 		SELECT target_type FROM main.path_entries
 		WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?
-	`, root[:], "target", "layer1").Scan(&targetType)
+	`, root[:], "target", "layer1").Scan(&targetType); err != nil {
+		t.Fatal(err)
+	}
 	if targetType != int(rsi.TargetHidden) {
 		t.Errorf("after hide: target_type = %d, want HIDDEN", targetType)
 	}
@@ -789,15 +819,19 @@ func TestCreateEntryVolatileTarget(t *testing.T) {
 
 	// Path entry should be in volatile database.
 	var count int
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM volatile.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
-		root[:], "volchild").Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM volatile.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
+		root[:], "volchild").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 1 {
 		t.Errorf("volatile path entry count = %d, want 1", count)
 	}
 
 	// Should NOT be in main database.
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
-		root[:], "volchild").Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ?",
+		root[:], "volchild").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Errorf("main path entry count = %d, want 0", count)
 	}
@@ -876,7 +910,9 @@ func TestWriteKeyLastWriteTime(t *testing.T) {
 	}
 
 	var got int64
-	hive.WriteDB().QueryRow("SELECT last_write_time FROM main.keys WHERE guid = ?", guid[:]).Scan(&got)
+	if err := hive.WriteDB().QueryRow("SELECT last_write_time FROM main.keys WHERE guid = ?", guid[:]).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
 	if got != lwt {
 		t.Errorf("last_write_time = %d, want %d", got, lwt)
 	}
@@ -898,7 +934,9 @@ func TestWriteKeyBothFields(t *testing.T) {
 
 	var sd []byte
 	var got int64
-	hive.WriteDB().QueryRow("SELECT sd, last_write_time FROM main.keys WHERE guid = ?", guid[:]).Scan(&sd, &got)
+	if err := hive.WriteDB().QueryRow("SELECT sd, last_write_time FROM main.keys WHERE guid = ?", guid[:]).Scan(&sd, &got); err != nil {
+		t.Fatal(err)
+	}
 	if len(sd) != 2 || sd[0] != 0xDD {
 		t.Errorf("sd = %x, want DDEE", sd)
 	}
@@ -954,7 +992,9 @@ func TestDropKeyInTransaction(t *testing.T) {
 
 	// Key should be gone.
 	var count int
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.keys WHERE guid = ?", guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.keys WHERE guid = ?", guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("key not deleted after transactional drop")
 	}
@@ -1082,10 +1122,12 @@ func TestCreateKeyRejectsGUIDHeldByTheOtherStore(t *testing.T) {
 			// readKeyMeta resolves through a UNION ALL that puts main first,
 			// while still occupying its GUID.
 			var count int
-			hive.WriteDB().QueryRow(`
+			if err := hive.WriteDB().QueryRow(`
 				SELECT (SELECT COUNT(*) FROM main.keys WHERE guid = ?)
 				     + (SELECT COUNT(*) FROM volatile.keys WHERE guid = ?)
-			`, guid[:], guid[:]).Scan(&count)
+			`, guid[:], guid[:]).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
 			if count != 1 {
 				t.Errorf("GUID present in %d stores, want 1", count)
 			}
@@ -1124,11 +1166,24 @@ func TestCreateEntryRejectsTripleHeldByTheOtherStore(t *testing.T) {
 	// RSI_ENUM_CHILDREN, giving the kernel two entries claiming the same name
 	// in the same layer.
 	var count int
-	hive.WriteDB().QueryRow(`
+	if err := hive.WriteDB().QueryRow(`
 		SELECT (SELECT COUNT(*) FROM main.path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?)
 		     + (SELECT COUNT(*) FROM volatile.path_entries WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?)
-	`, root[:], "child", "base", root[:], "child", "base").Scan(&count)
+	`, root[:], "child", "base", root[:], "child", "base").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 1 {
 		t.Errorf("entry present %d times across stores, want 1", count)
 	}
+}
+
+// mustDecode keeps malformed response payloads from becoming zero-value success
+// assertions. The decoder is local to each test and its reads stay sequential.
+func mustDecode[T any](t *testing.T, read func() (T, error)) T {
+	t.Helper()
+	value, err := read()
+	if err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return value
 }

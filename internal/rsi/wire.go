@@ -9,7 +9,8 @@ import (
 // GUID is a 16-byte identifier.
 type GUID [16]byte
 
-// Encoder writes binary RSI data to a buffer.
+// Encoder writes little-endian RSI fields to a caller-owned buffer.
+// It is not safe for concurrent use.
 type Encoder struct {
 	buf []byte
 }
@@ -47,13 +48,14 @@ func (e *Encoder) PutBlob(b []byte) {
 	e.buf = append(e.buf, b...)
 }
 
-// Bytes returns the encoded data.
+// Bytes returns a borrowed view of the encoded data, valid until the next write.
 func (e *Encoder) Bytes() []byte { return e.buf }
 
 // Len returns the current length of the encoded data.
 func (e *Encoder) Len() int { return len(e.buf) }
 
-// Decoder reads binary RSI data from a byte slice.
+// Decoder reads little-endian RSI fields from a borrowed byte slice.
+// The caller must not mutate the slice while decoding.
 type Decoder struct {
 	buf []byte
 	off int
@@ -129,7 +131,8 @@ func (d *Decoder) GUID() (GUID, error) {
 	return g, nil
 }
 
-// String reads a length-prefixed string.
+// String reads a length-prefixed string. UTF-8 validation belongs to the
+// protocol boundary; this decoder preserves the received bytes.
 func (d *Decoder) String() (string, error) {
 	n, err := d.Uint32()
 	if err != nil {
@@ -191,14 +194,7 @@ func ReadRequestHeader(r io.Reader) (RequestHeader, []byte, error) {
 		return RequestHeader{}, nil, fmt.Errorf("read message body: %w", err)
 	}
 
-	hdr := RequestHeader{
-		TotalLen:  totalLen,
-		RequestID: binary.LittleEndian.Uint64(msg[4:12]),
-		OpCode:    binary.LittleEndian.Uint16(msg[12:14]),
-		TxnID:     binary.LittleEndian.Uint64(msg[14:22]),
-	}
-
-	return hdr, msg[RequestHeaderSize:], nil
+	return ParseRequest(msg)
 }
 
 // ParseRequest parses a single complete in-memory RSI request message.
@@ -218,7 +214,10 @@ func ParseRequest(msg []byte) (RequestHeader, []byte, error) {
 		return RequestHeader{}, nil, fmt.Errorf("total_len %d exceeds maximum request size %d", totalLen, MaxRequestSize)
 	}
 	if int(totalLen) != len(msg) {
-		return RequestHeader{}, nil, fmt.Errorf("total_len %d does not match message length %d (malformed framing)", totalLen, len(msg))
+		return RequestHeader{}, nil, fmt.Errorf(
+			"total_len %d does not match message length %d (malformed framing)",
+			totalLen, len(msg),
+		)
 	}
 
 	hdr := RequestHeader{
@@ -230,7 +229,9 @@ func ParseRequest(msg []byte) (RequestHeader, []byte, error) {
 	return hdr, msg[RequestHeaderSize:], nil
 }
 
-// WriteResponse writes a complete response to a writer.
+// WriteResponse submits one complete response in a single Write call.
+// Message-oriented device writes must not be split into header/payload writes.
+// The writer must obey io.Writer: a short write must return a non-nil error.
 func WriteResponse(w io.Writer, requestID uint64, opCode uint16, status uint32, payload []byte) error {
 	totalLen := uint32(ResponseHeaderSize + 4 + len(payload)) // header + status + payload
 	buf := make([]byte, 0, totalLen)

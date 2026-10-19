@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log"
 	"sort"
 
 	"github.com/peios/loregd/internal/fold"
+	"github.com/peios/loregd/internal/hivedb"
 	"github.com/peios/loregd/internal/rsi"
 )
 
@@ -81,7 +83,7 @@ func queryValueEntries(db Querier, req rsi.QueryValuesRequest) ([]rsi.QueryValue
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeReadRows(rows)
 
 	var entries []rsi.QueryValuesEntry
 	for rows.Next() {
@@ -122,7 +124,7 @@ func queryBlanketTombstones(db Querier, guid rsi.GUID) ([]rsi.BlanketTombstoneEn
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeReadRows(rows)
 
 	var blankets []rsi.BlanketTombstoneEntry
 	for rows.Next() {
@@ -193,84 +195,17 @@ func (h *Handler) handleSetValue(header rsi.RequestHeader, payload []byte) (stat
 		table = "volatile.[values]"
 	}
 
-	// Conditional write (CAS).
 	if req.ExpectedSequence != 0 {
-		// For non-transactional CAS, wrap in a local transaction.
-		// For transactional CAS, the outer transaction provides atomicity.
 		if hdr.TxnID == 0 {
-			// Use BEGIN IMMEDIATE for CAS atomicity; a deferred
-			// BEGIN would allow concurrent writers between SELECT and INSERT.
-			ctx := hdr.ctx
-			conn, connErr := hive.WriteDB().Conn(ctx)
-			if connErr != nil {
-				log.Printf("set value CAS conn: %v", connErr)
-				return storageStatus(connErr), nil
-			}
-			defer conn.Close()
-			committed := false
-			defer func() {
-				if !committed {
-					rollbackConn(conn)
-				}
-			}()
-
-			_, connErr = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
-			if connErr != nil {
-				if isBusy(connErr) {
-					return rsi.StatusTxnBusy, nil
-				}
-				log.Printf("set value CAS begin: %v", connErr)
-				return storageStatus(connErr), nil
-			}
-
-			var currentSeq uint64
-			err = conn.QueryRowContext(ctx, `SELECT sequence FROM `+table+` WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
-				req.GUID[:], foldedName, req.LayerName).Scan(&currentSeq)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && currentSeq != req.ExpectedSequence) {
-				return rsi.StatusCASFailed, nil
-			}
-			if err != nil {
-				log.Printf("set value CAS check: %v", err)
-				return storageStatus(err), nil
-			}
-
-			_, err = conn.ExecContext(ctx, `INSERT OR REPLACE INTO `+table+` (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
-			if err != nil {
-				log.Printf("set value CAS write: %v", err)
-				return storageStatus(err), nil
-			}
-			err = commitConn(ctx, conn)
-			if err != nil {
-				log.Printf("set value CAS commit: %v", err)
-				return storageStatus(err), nil
-			}
-			committed = true
-		} else {
-			// Within RSI transaction; already on the pinned connection.
-			var currentSeq uint64
-			err = wq.QueryRow(`SELECT sequence FROM `+table+` WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
-				req.GUID[:], foldedName, req.LayerName).Scan(&currentSeq)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && currentSeq != req.ExpectedSequence) {
-				return rsi.StatusCASFailed, nil
-			}
-			if err != nil {
-				log.Printf("set value CAS check: %v", err)
-				return storageStatus(err), nil
-			}
-
-			_, err = wq.Exec(`INSERT OR REPLACE INTO `+table+` (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
-			if err != nil {
-				log.Printf("set value CAS write: %v", err)
-				return storageStatus(err), nil
-			}
+			return setValueLocalCAS(hdr.ctx, hive, table, foldedName, req), nil
 		}
-		return rsi.StatusOK, nil
+		return setValueCAS(wq, table, foldedName, req), nil
 	}
 
 	// Unconditional write.
-	_, err = wq.Exec(`INSERT OR REPLACE INTO `+table+` (key_guid, name, name_folded, layer, type, data, sequence) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	_, err = wq.Exec(`INSERT OR REPLACE INTO `+table+`
+        (key_guid, name, name_folded, layer, type, data, sequence)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
 	if err != nil {
 		log.Printf("set value error: %v", err)
@@ -365,4 +300,68 @@ func (h *Handler) handleSetBlanketTombstone(header rsi.RequestHeader, payload []
 	}
 
 	return rsi.StatusOK, nil
+}
+
+// setValueLocalCAS owns its immediate transaction; callers hold the hive gate.
+func setValueLocalCAS(ctx context.Context, hive *hivedb.HiveDB, table, foldedName string, req rsi.SetValueRequest) uint32 {
+	// Use BEGIN IMMEDIATE for CAS atomicity; a deferred
+	// BEGIN would allow concurrent writers between SELECT and INSERT.
+	conn, connErr := hive.WriteDB().Conn(ctx)
+	if connErr != nil {
+		log.Printf("set value CAS conn: %v", connErr)
+		return storageStatus(connErr)
+	}
+	defer releaseConnection(conn)
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackConn(conn)
+		}
+	}()
+
+	_, connErr = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
+	if connErr != nil {
+		if isBusy(connErr) {
+			return rsi.StatusTxnBusy
+		}
+		log.Printf("set value CAS begin: %v", connErr)
+		return storageStatus(connErr)
+	}
+
+	status := setValueCAS(&connQuerier{conn: conn, ctx: ctx}, table, foldedName, req)
+	if status != rsi.StatusOK {
+		return status
+	}
+
+	err := commitConn(ctx, conn)
+	if err != nil {
+		log.Printf("set value CAS commit: %v", err)
+		return storageStatus(err)
+	}
+	committed = true
+	return rsi.StatusOK
+}
+
+func setValueCAS(wq Querier, table, foldedName string, req rsi.SetValueRequest) uint32 {
+	// The caller owns the transaction on this pinned connection.
+	var currentSeq uint64
+	err := wq.QueryRow(`SELECT sequence FROM `+table+` WHERE key_guid = ? AND name_folded = ? AND layer = ?`,
+		req.GUID[:], foldedName, req.LayerName).Scan(&currentSeq)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && currentSeq != req.ExpectedSequence) {
+		return rsi.StatusCASFailed
+	}
+	if err != nil {
+		log.Printf("set value CAS check: %v", err)
+		return storageStatus(err)
+	}
+
+	_, err = wq.Exec(`INSERT OR REPLACE INTO `+table+`
+        (key_guid, name, name_folded, layer, type, data, sequence)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		req.GUID[:], req.ValueName, foldedName, req.LayerName, req.Type, req.Data, req.Sequence)
+	if err != nil {
+		log.Printf("set value CAS write: %v", err)
+		return storageStatus(err)
+	}
+	return rsi.StatusOK
 }

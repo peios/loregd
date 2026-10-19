@@ -41,21 +41,8 @@ type LookupKeyMeta struct {
 }
 
 func EncodeLookupResponse(e *Encoder, entries []LookupPathEntry, meta []LookupKeyMeta) {
-	e.PutUint32(uint32(len(entries)))
-	for _, ent := range entries {
-		e.PutString(ent.LayerName)
-		e.PutUint8(ent.TargetType)
-		e.PutGUID(ent.TargetGUID)
-		e.PutUint64(ent.Sequence)
-	}
-	e.PutUint32(uint32(len(meta)))
-	for _, m := range meta {
-		e.PutGUID(m.GUID)
-		e.PutBlob(m.SD)
-		e.PutBool(m.Volatile)
-		e.PutBool(m.Symlink)
-		e.PutUint64(uint64(m.LastWriteTime))
-	}
+	encodePathEntries(e, entries)
+	encodeKeyMetadata(e, meta)
 }
 
 type CreateEntryRequest struct {
@@ -154,24 +141,11 @@ type EnumChildrenChild struct {
 
 func EncodeEnumChildrenResponse(e *Encoder, children []EnumChildrenChild, meta []LookupKeyMeta) {
 	e.PutUint32(uint32(len(children)))
-	for _, ch := range children {
-		e.PutString(ch.ChildName)
-		e.PutUint32(uint32(len(ch.Entries)))
-		for _, ent := range ch.Entries {
-			e.PutString(ent.LayerName)
-			e.PutUint8(ent.TargetType)
-			e.PutGUID(ent.TargetGUID)
-			e.PutUint64(ent.Sequence)
-		}
+	for _, child := range children {
+		e.PutString(child.ChildName)
+		encodePathEntries(e, child.Entries)
 	}
-	e.PutUint32(uint32(len(meta)))
-	for _, m := range meta {
-		e.PutGUID(m.GUID)
-		e.PutBlob(m.SD)
-		e.PutBool(m.Volatile)
-		e.PutBool(m.Symlink)
-		e.PutUint64(uint64(m.LastWriteTime))
-	}
+	encodeKeyMetadata(e, meta)
 }
 
 // --- Key operations ---
@@ -509,4 +483,25 @@ func DecodeFlushRequest(d *Decoder) (FlushRequest, error) {
 		return r, err
 	}
 	return r, nil
+}
+
+func encodePathEntries(e *Encoder, entries []LookupPathEntry) {
+	e.PutUint32(uint32(len(entries)))
+	for _, ent := range entries {
+		e.PutString(ent.LayerName)
+		e.PutUint8(ent.TargetType)
+		e.PutGUID(ent.TargetGUID)
+		e.PutUint64(ent.Sequence)
+	}
+}
+
+func encodeKeyMetadata(e *Encoder, meta []LookupKeyMeta) {
+	e.PutUint32(uint32(len(meta)))
+	for _, m := range meta {
+		e.PutGUID(m.GUID)
+		e.PutBlob(m.SD)
+		e.PutBool(m.Volatile)
+		e.PutBool(m.Symlink)
+		e.PutUint64(uint64(m.LastWriteTime))
+	}
 }

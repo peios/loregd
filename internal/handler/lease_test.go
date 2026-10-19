@@ -36,7 +36,7 @@ func TestLeaseExpiryReclaimsWriterAndSnapshot(t *testing.T) {
 			}
 			h.txns.mu.Lock()
 			info := h.txns.txns[991]
-			info.lease = rsi.MonotonicNS() - 1
+			info.leaseNS = rsi.MonotonicNS() - 1
 			h.txns.mu.Unlock()
 			if unlock, err := h.txns.lockOperation(context.Background(), 991); err == nil {
 				unlock()
@@ -80,9 +80,9 @@ func TestLeaseRenewalCannotExtendLifetimeOrResurrect(t *testing.T) {
 	}, &cleanup)
 	m.mu.Lock()
 	info := m.txns[1]
-	lifetime := info.lifetime
-	renewed := info.lease
-	info.lifetime = rsi.MonotonicNS() - 1
+	lifetime := info.lifetimeNS
+	renewed := info.leaseNS
+	info.lifetimeNS = rsi.MonotonicNS() - 1
 	m.mu.Unlock()
 	if lifetime != header.LifetimeNS || renewed <= header.LeaseNS {
 		t.Fatal("renewal changed lifetime or failed")
@@ -96,7 +96,7 @@ func TestLeaseRenewalCannotExtendLifetimeOrResurrect(t *testing.T) {
 	}
 	m.maintainLeases(func(uint64, uint64) (uint64, error) {
 		m.mu.Lock()
-		m.txns[2].lease = rsi.MonotonicNS() - 1
+		m.txns[2].leaseNS = rsi.MonotonicNS() - 1
 		m.mu.Unlock()
 		return rsi.MonotonicNS() + uint64(5*time.Second), nil
 	}, &cleanup)
@@ -148,7 +148,7 @@ func TestExpiryWaitsForAdmittedCommitOutcome(t *testing.T) {
 	go func() { done <- h.txns.commit(context.Background(), 1) }()
 	<-committed
 	h.txns.mu.Lock()
-	h.txns.txns[1].lease = rsi.MonotonicNS() - 1
+	h.txns.txns[1].leaseNS = rsi.MonotonicNS() - 1
 	h.txns.mu.Unlock()
 	var cleanup sync.WaitGroup
 	h.txns.maintainLeases(func(uint64, uint64) (uint64, error) { t.Error("renewed terminal commit"); return 0, nil }, &cleanup)
@@ -247,7 +247,7 @@ func TestAdmittedCommitOutlivesRequestCancellationAndLeaseExpiry(t *testing.T) {
 	sqlContext := <-connector.entered
 	cancel()
 	m.mu.Lock()
-	m.txns[1].lease = rsi.MonotonicNS() - 1
+	m.txns[1].leaseNS = rsi.MonotonicNS() - 1
 	m.mu.Unlock()
 	var cleanup sync.WaitGroup
 	m.maintainLeases(func(uint64, uint64) (uint64, error) { t.Error("expired commit renewed"); return 0, nil }, &cleanup)

@@ -25,7 +25,8 @@ func NewDispatcher() *Dispatcher {
 	}
 }
 
-// Register adds a handler for the given op_code.
+// Register adds a handler for the given op_code. Registration must finish before
+// any concurrent Serve, Dispatch, HasHandler, or HandlerCount calls.
 func (d *Dispatcher) Register(opCode uint16, h Handler) {
 	d.handlers[opCode] = h
 }

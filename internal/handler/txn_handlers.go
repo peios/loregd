@@ -211,7 +211,7 @@ func deleteLayerFromHive(ctx context.Context, hive *hivedb.HiveDB, layerName str
 	if err != nil {
 		return nil, fmt.Errorf("acquire write connection: %w", err)
 	}
-	defer conn.Close()
+	defer releaseConnection(conn)
 	committed := false
 	defer func() {
 		if !committed {
@@ -223,43 +223,9 @@ func deleteLayerFromHive(ctx context.Context, hive *hivedb.HiveDB, layerName str
 		return nil, fmt.Errorf("begin immediate: %w", err)
 	}
 
-	// Capture orphaned GUIDs before deletion.
-	rows, err := conn.QueryContext(ctx, `
-		SELECT DISTINCT target_guid FROM (
-			SELECT target_guid FROM main.path_entries
-			WHERE layer = ? AND target_type = 0
-			UNION ALL
-			SELECT target_guid FROM volatile.path_entries
-			WHERE layer = ? AND target_type = 0
-		)
-		WHERE target_guid NOT IN (
-			SELECT target_guid FROM main.path_entries
-			WHERE layer != ? AND target_type = 0
-			UNION
-			SELECT target_guid FROM volatile.path_entries
-			WHERE layer != ? AND target_type = 0
-		)
-	`, layerName, layerName, layerName, layerName)
+	orphans, err := findLayerOrphans(&connQuerier{conn: conn, ctx: ctx}, layerName)
 	if err != nil {
 		return nil, err
-	}
-
-	var orphans []rsi.GUID
-	for rows.Next() {
-		var guidBytes []byte
-		if err := rows.Scan(&guidBytes); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		var g rsi.GUID
-		if len(guidBytes) == 16 {
-			copy(g[:], guidBytes)
-		}
-		orphans = append(orphans, g)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("orphan scan: %w", err)
 	}
 
 	// Delete all entries for the layer, checking each error.
@@ -285,5 +251,50 @@ func deleteLayerFromHive(ctx context.Context, hive *hivedb.HiveDB, layerName str
 	}
 
 	committed = true
+	return orphans, nil
+}
+
+// findLayerOrphans runs before deletion on the same pinned transaction, so the
+// returned GUIDs cannot gain or lose references between this query and deletion.
+func findLayerOrphans(q Querier, layerName string) ([]rsi.GUID, error) {
+	// Capture orphaned GUIDs before deletion.
+	rows, err := q.Query(`
+		SELECT DISTINCT target_guid FROM (
+			SELECT target_guid FROM main.path_entries
+			WHERE layer = ? AND target_type = 0
+			UNION ALL
+			SELECT target_guid FROM volatile.path_entries
+			WHERE layer = ? AND target_type = 0
+		)
+		WHERE target_guid NOT IN (
+			SELECT target_guid FROM main.path_entries
+			WHERE layer != ? AND target_type = 0
+			UNION
+			SELECT target_guid FROM volatile.path_entries
+			WHERE layer != ? AND target_type = 0
+		)
+	`, layerName, layerName, layerName, layerName)
+	if err != nil {
+		return nil, err
+	}
+
+	var orphans []rsi.GUID
+	for rows.Next() {
+		var guidBytes []byte
+		if err := rows.Scan(&guidBytes); err != nil {
+			closeReadRows(rows)
+			return nil, err
+		}
+		var g rsi.GUID
+		if len(guidBytes) == 16 {
+			copy(g[:], guidBytes)
+		}
+		orphans = append(orphans, g)
+	}
+	closeReadRows(rows)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("orphan scan: %w", err)
+	}
+
 	return orphans, nil
 }

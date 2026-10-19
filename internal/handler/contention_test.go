@@ -34,7 +34,9 @@ func TestLookupWhileDeleteTransactionOpen(t *testing.T) {
 		insertKey(t, hive, item.id, item.name, root, false)
 		insertPathEntry(t, hive, root, item.name, "base", item.id, 1)
 	}
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(301))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(301)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	defer h.txns.abort(301)
 	st, _ := h.handleDeleteEntry(rsi.RequestHeader{TxnID: 301}, encodeDeleteEntry(root, "One", "base"))
 	if st != rsi.StatusOK {
@@ -76,7 +78,9 @@ func TestSnapshotPinsBothStoresAndDoesNotBlockVolatileWriter(t *testing.T) {
 	if _, err := hive.WriteDB().Exec(`INSERT INTO volatile.[values] (key_guid,name,name_folded,layer,type,data,sequence) VALUES (?,'Value','value','base',1,?,1)`, volatile[:], []byte("old")); err != nil {
 		t.Fatal(err)
 	}
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxnMode(302, rsi.TxnReadOnly))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxnMode(302, rsi.TxnReadOnly)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	defer h.txns.abort(302)
 	hdr := rsi.RequestHeader{TxnID: 302}
 	if val, _ := queryFirstValueData(t, h, hdr, persistent, "Value"); val != "old" {
@@ -159,7 +163,9 @@ func TestRequestWaitsForWholePublication(t *testing.T) {
 func TestInterruptedTransactionCannotResumeOrCommit(t *testing.T) {
 	h, hive := testHandler(t)
 	root := rsi.GUID(hive.RootGUID)
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(303))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(303)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	st, _ := h.handleCreateKey(rsi.RequestHeader{TxnID: 303}, encodeCreateKey(rsi.GUID{0x96}, "Interrupted", root, []byte{1}, false, false))
 	if st != rsi.StatusOK {
 		t.Fatal(st)
@@ -215,7 +221,9 @@ func TestSQLiteWriteLockHasRequestDeadline(t *testing.T) {
 
 func TestSnapshotStillResolvesDeletedKeyAfterCacheEviction(t *testing.T) {
 	h, _, guid := setupKeyForValues(t)
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxnMode(304, rsi.TxnReadOnly))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxnMode(304, rsi.TxnReadOnly)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	defer h.txns.abort(304)
 	hdr := rsi.RequestHeader{TxnID: 304}
 	st, _ := h.handleReadKey(hdr, encodeReadKey(guid))

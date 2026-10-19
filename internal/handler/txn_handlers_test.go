@@ -20,7 +20,9 @@ func TestBeginTransaction(t *testing.T) {
 
 func TestCommitUnboundTransaction(t *testing.T) {
 	h, _ := testHandler(t)
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(1))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(1)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	// Commit without any operations (never bound). Should succeed.
 	status, _ := h.handleCommitTransaction(rsi.RequestHeader{}, encodeCommitTxn(1))
 	if status != rsi.StatusOK {
@@ -34,7 +36,9 @@ func TestTransactionWriteAndCommit(t *testing.T) {
 	guid := rsi.GUID{0x01, 0x01}
 
 	// Begin transaction.
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(42))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(42)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 
 	// Create a key within the transaction.
 	hdr := rsi.RequestHeader{TxnID: 42}
@@ -49,7 +53,7 @@ func TestTransactionWriteAndCommit(t *testing.T) {
 		t.Fatalf("read in txn: status = %d (should see uncommitted write)", status)
 	}
 	d := rsi.NewDecoder(payload)
-	name, _ := d.String()
+	name := mustDecode(t, d.String)
 	if name != "TxnKey" {
 		t.Errorf("read name = %q, want %q", name, "TxnKey")
 	}
@@ -72,7 +76,9 @@ func TestTransactionAbort(t *testing.T) {
 	root := rsi.GUID(hive.RootGUID)
 	guid := rsi.GUID{0xA1}
 
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(99))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(99)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 
 	// Create a key within the transaction.
 	hdr := rsi.RequestHeader{TxnID: 99}
@@ -89,7 +95,9 @@ func TestTransactionAbort(t *testing.T) {
 
 	// Key should NOT be visible.
 	var count int
-	hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.keys WHERE guid = ?", guid[:]).Scan(&count)
+	if err := hive.WriteDB().QueryRow("SELECT COUNT(*) FROM main.keys WHERE guid = ?", guid[:]).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Error("aborted key is still visible")
 	}
@@ -100,11 +108,15 @@ func TestTransactionIsolation(t *testing.T) {
 	root := rsi.GUID(hive.RootGUID)
 	guid := rsi.GUID{0xB1}
 
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(7))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(7)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 
 	// Create key in transaction.
 	hdr := rsi.RequestHeader{TxnID: 7}
-	h.handleCreateKey(hdr, encodeCreateKey(guid, "IsoKey", root, []byte{0x01}, false, false))
+	if status, _ := h.handleCreateKey(hdr, encodeCreateKey(guid, "IsoKey", root, []byte{0x01}, false, false)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 
 	// Non-transactional read should NOT see the uncommitted key.
 	status, _ := h.handleReadKey(rsi.RequestHeader{}, encodeReadKey(guid))
@@ -112,7 +124,9 @@ func TestTransactionIsolation(t *testing.T) {
 		t.Errorf("isolation: non-txn read status = %d, want NotFound", status)
 	}
 
-	h.handleCommitTransaction(rsi.RequestHeader{}, encodeCommitTxn(7))
+	if status, _ := h.handleCommitTransaction(rsi.RequestHeader{}, encodeCommitTxn(7)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 }
 
 func TestBeginTransactionDuplicate(t *testing.T) {
@@ -142,8 +156,12 @@ func TestAbortUnknownTransaction(t *testing.T) {
 
 func TestAbortAlreadyAborted(t *testing.T) {
 	h, _ := testHandler(t)
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(10))
-	h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(10))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(10)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
+	if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(10)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 
 	// Aborting again should still succeed.
 	status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(10))
@@ -179,7 +197,9 @@ func TestTransactionHiveConsistency(t *testing.T) {
 	h.guidCache.Store(guid2, hive2)
 
 	// Begin transaction, bind to hive1 via a write.
-	h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(30))
+	if status, _ := h.handleBeginTransaction(rsi.RequestHeader{}, encodeBeginTxn(30)); status != rsi.StatusOK {
+		t.Fatalf("fixture operation status = %d, want OK", status)
+	}
 	hdr := rsi.RequestHeader{TxnID: 30}
 	status, _ := h.handleWriteKey(hdr, encodeWriteKey(guid1, rsi.WriteKeyFieldSD, []byte{0x01}, 0))
 	if status != rsi.StatusOK {
@@ -204,7 +224,7 @@ func TestDeleteLayerEmpty(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	d := rsi.NewDecoder(payload)
-	count, _ := d.Uint32()
+	count := mustDecode(t, d.Uint32)
 	if count != 0 {
 		t.Errorf("orphan count = %d, want 0", count)
 	}
@@ -237,8 +257,12 @@ func TestDeleteLayerPurgesEntries(t *testing.T) {
 
 	// The role-x path entry and value should be gone.
 	var peCount, vCount int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.path_entries WHERE layer = 'role-x'`).Scan(&peCount)
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE layer = 'role-x'`).Scan(&vCount)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.path_entries WHERE layer = 'role-x'`).Scan(&peCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.[values] WHERE layer = 'role-x'`).Scan(&vCount); err != nil {
+		t.Fatal(err)
+	}
 	if peCount != 0 {
 		t.Errorf("path entries for role-x = %d, want 0", peCount)
 	}
@@ -247,15 +271,17 @@ func TestDeleteLayerPurgesEntries(t *testing.T) {
 	}
 
 	// The base layer entry should survive.
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.path_entries WHERE layer = 'base' AND child_name_folded = ?`,
-		fold.String("LayerChild")).Scan(&peCount)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.path_entries WHERE layer = 'base' AND child_name_folded = ?`,
+		fold.String("LayerChild")).Scan(&peCount); err != nil {
+		t.Fatal(err)
+	}
 	if peCount != 1 {
 		t.Errorf("base layer path entries = %d, want 1", peCount)
 	}
 
 	// No orphans (base layer entry still references the key).
 	d := rsi.NewDecoder(payload)
-	orphanCount, _ := d.Uint32()
+	orphanCount := mustDecode(t, d.Uint32)
 	if orphanCount != 0 {
 		t.Errorf("orphan count = %d, want 0", orphanCount)
 	}
@@ -276,11 +302,11 @@ func TestDeleteLayerReportsOrphans(t *testing.T) {
 	}
 
 	d := rsi.NewDecoder(payload)
-	orphanCount, _ := d.Uint32()
+	orphanCount := mustDecode(t, d.Uint32)
 	if orphanCount != 1 {
 		t.Fatalf("orphan count = %d, want 1", orphanCount)
 	}
-	orphanGUID, _ := d.GUID()
+	orphanGUID := mustDecode(t, d.GUID)
 	if orphanGUID != guid {
 		t.Errorf("orphan GUID = %x, want %x", orphanGUID, guid)
 	}
@@ -297,7 +323,9 @@ func TestDeleteLayerPurgesBlanketTombstones(t *testing.T) {
 	insertPathEntry(t, hive, root, "BTChild", "base", guid, 0)
 
 	// Add a blanket tombstone in the layer being deleted.
-	hive.WriteDB().Exec(`INSERT INTO main.blanket_tombstones (key_guid, layer, sequence) VALUES (?, 'role-z', 50)`, guid[:])
+	if _, err := hive.WriteDB().Exec(`INSERT INTO main.blanket_tombstones (key_guid, layer, sequence) VALUES (?, 'role-z', 50)`, guid[:]); err != nil {
+		t.Fatal(err)
+	}
 
 	status, _ := h.handleDeleteLayer(rsi.RequestHeader{}, encodeDeleteLayer("role-z"))
 	if status != rsi.StatusOK {
@@ -306,7 +334,9 @@ func TestDeleteLayerPurgesBlanketTombstones(t *testing.T) {
 
 	// Blanket tombstone for role-z should be gone.
 	var btCount int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.blanket_tombstones WHERE layer = 'role-z'`).Scan(&btCount)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM main.blanket_tombstones WHERE layer = 'role-z'`).Scan(&btCount); err != nil {
+		t.Fatal(err)
+	}
 	if btCount != 0 {
 		t.Errorf("blanket_tombstones for role-z = %d, want 0", btCount)
 	}
@@ -363,9 +393,15 @@ func TestDeleteLayerVolatileEntries(t *testing.T) {
 
 	// All volatile entries for role-v should be gone.
 	var peCount, vCount, btCount int
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.path_entries WHERE layer = 'role-v'`).Scan(&peCount)
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.[values] WHERE layer = 'role-v'`).Scan(&vCount)
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.blanket_tombstones WHERE layer = 'role-v'`).Scan(&btCount)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.path_entries WHERE layer = 'role-v'`).Scan(&peCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.[values] WHERE layer = 'role-v'`).Scan(&vCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.blanket_tombstones WHERE layer = 'role-v'`).Scan(&btCount); err != nil {
+		t.Fatal(err)
+	}
 	if peCount != 0 {
 		t.Errorf("volatile path_entries for role-v = %d, want 0", peCount)
 	}
@@ -377,15 +413,17 @@ func TestDeleteLayerVolatileEntries(t *testing.T) {
 	}
 
 	// Base layer entry should survive.
-	hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.path_entries WHERE layer = 'base' AND child_name_folded = ?`,
-		fold.String("VolLayerChild")).Scan(&peCount)
+	if err := hive.WriteDB().QueryRow(`SELECT COUNT(*) FROM volatile.path_entries WHERE layer = 'base' AND child_name_folded = ?`,
+		fold.String("VolLayerChild")).Scan(&peCount); err != nil {
+		t.Fatal(err)
+	}
 	if peCount != 1 {
 		t.Errorf("base layer volatile path entries = %d, want 1", peCount)
 	}
 
 	// No orphans (base layer entry still references the key).
 	d := rsi.NewDecoder(payload)
-	orphanCount, _ := d.Uint32()
+	orphanCount := mustDecode(t, d.Uint32)
 	if orphanCount != 0 {
 		t.Errorf("orphan count = %d, want 0", orphanCount)
 	}

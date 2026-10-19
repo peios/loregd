@@ -73,7 +73,7 @@ func TestBlanketTombstonesAreReturnedInACanonicalOrder(t *testing.T) {
 func decodeBlanketList(t *testing.T, payload []byte) []string {
 	t.Helper()
 	d := rsi.NewDecoder(payload)
-	entryCount, _ := d.Uint32()
+	entryCount := mustDecode(t, d.Uint32)
 	for range entryCount {
 		d.String() // name
 		d.String() // layer
@@ -81,11 +81,11 @@ func decodeBlanketList(t *testing.T, payload []byte) []string {
 		d.Blob()   // data
 		d.Uint64() // sequence
 	}
-	blanketCount, _ := d.Uint32()
+	blanketCount := mustDecode(t, d.Uint32)
 	out := make([]string, 0, blanketCount)
 	for range blanketCount {
-		layer, _ := d.String()
-		seq, _ := d.Uint64()
+		layer := mustDecode(t, d.String)
+		seq := mustDecode(t, d.Uint64)
 		out = append(out, layer+"/"+itoa(seq))
 	}
 	return out
@@ -182,7 +182,7 @@ func TestDeleteLayerOrphansAreReturnedInByteOrder(t *testing.T) {
 func decodeOrphanGUIDs(t *testing.T, payload []byte) []rsi.GUID {
 	t.Helper()
 	d := rsi.NewDecoder(payload)
-	n, _ := d.Uint32()
+	n := mustDecode(t, d.Uint32)
 	out := make([]rsi.GUID, 0, n)
 	for range n {
 		g, err := d.GUID()

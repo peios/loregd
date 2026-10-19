@@ -68,7 +68,9 @@ func TestBeginTransactionRejectsMalformedModeWithoutState(t *testing.T) {
 			if !readOnly {
 				t.Error("valid read-only BEGIN lost its mode")
 			}
-			h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(txnID))
+			if status, _ := h.handleAbortTransaction(rsi.RequestHeader{}, encodeAbortTxn(txnID)); status != rsi.StatusOK {
+				t.Fatalf("fixture operation status = %d, want OK", status)
+			}
 		})
 	}
 }

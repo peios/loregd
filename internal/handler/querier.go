@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 // Querier is the common interface for database operations, satisfied
@@ -47,4 +48,25 @@ func (q *dbQuerier) Query(query string, args ...any) (*sql.Rows, error) {
 }
 func (q *dbQuerier) QueryRow(query string, args ...any) *sql.Row {
 	return q.db.QueryRowContext(q.ctx, query, args...)
+}
+
+// releaseConnection returns a resolved or discarded connection to database/sql.
+// Conn.Close can only report ErrConnDone here, which means it is already closed.
+func releaseConnection(conn *sql.Conn) {
+	_ = conn.Close()
+}
+
+// A snapshot has no uncommitted writes. Report cleanup failures without changing
+// the already resolved RSI transaction result.
+func closeSnapshotDatabase(db *sql.DB) {
+	if err := db.Close(); err != nil {
+		log.Printf("close snapshot database: %v", err)
+	}
+}
+
+// All callers scan read-only results and check Rows.Err after exhaustion, which
+// includes automatic-close errors. Early returns already report the scan error;
+// releasing those rows does not discard an unreported write result.
+func closeReadRows(rows *sql.Rows) {
+	_ = rows.Close()
 }
