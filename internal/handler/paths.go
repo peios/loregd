@@ -2,7 +2,9 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -225,23 +227,25 @@ func (h *Handler) handleHideEntry(header rsi.RequestHeader, payload []byte) (sta
 
 	foldedName := fold.String(req.ChildName)
 
-	table := "main.path_entries"
-	vol, volErr := isVolatileQ(wq, req.ParentGUID)
-	if volErr == errKeyNotFound {
+	volatile, err := isVolatileQ(wq, req.ParentGUID)
+	if errors.Is(err, errKeyNotFound) {
 		return rsi.StatusNotFound, nil
 	}
-	if volErr != nil {
-		log.Printf("hide entry isVolatile: %v", volErr)
-		return storageStatus(volErr), nil
+	if err != nil {
+		log.Printf("hide entry isVolatile: %v", err)
+		return storageStatus(err), nil
 	}
-	if vol {
-		table = "volatile.path_entries"
+	table, other := "main.path_entries", "volatile.path_entries"
+	if volatile {
+		table, other = other, table
 	}
 
-	_, err = wq.Exec(`
-		INSERT OR REPLACE INTO `+table+` (parent_guid, child_name, child_name_folded, layer, target_type, target_guid, sequence)
-		VALUES (?, ?, ?, ?, 1, NULL, ?)
-	`, req.ParentGUID[:], req.ChildName, foldedName, req.LayerName, req.Sequence)
+	if hdr.TxnID != 0 {
+		// writeQ returns a pinned connQuerier for every active RSI transaction.
+		err = replaceHiddenEntry(hdr.ctx, wq.(*connQuerier).conn, table, other, foldedName, req)
+	} else {
+		err = hideEntryLocally(hdr.ctx, hive, table, other, foldedName, req)
+	}
 	if err != nil {
 		log.Printf("hide entry error: %v", err)
 		return storageStatus(err), nil
@@ -475,4 +479,73 @@ func orderedChildren(groups map[string]*childGroup) []rsi.EnumChildrenChild {
 	}
 
 	return children
+}
+
+// hideEntryLocally keeps both stores' replacement under the same write lock.
+// The caller owns the hive publication gate until this transaction resolves.
+func hideEntryLocally(ctx context.Context, hive *hivedb.HiveDB, table, other, foldedName string, req rsi.HideEntryRequest) error {
+	conn, err := hive.WriteDB().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire hide connection: %w", err)
+	}
+	defer releaseConnection(conn)
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackConn(conn)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin hide: %w", err)
+	}
+	if err := replaceHiddenEntry(ctx, conn, table, other, foldedName, req); err != nil {
+		return err
+	}
+	if err := commitConn(ctx, conn); err != nil {
+		return fmt.Errorf("commit hide: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// replaceHiddenEntry removes the opposite-store entry and inserts the marker
+// atomically. A savepoint preserves earlier RSI transaction work on failure.
+func replaceHiddenEntry(ctx context.Context, conn *sql.Conn, table, other, foldedName string, req rsi.HideEntryRequest) (err error) {
+	if _, err = conn.ExecContext(ctx, "SAVEPOINT loregd_hide_entry"); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			rollbackHideSavepoint(conn)
+		}
+	}()
+	if _, err = conn.ExecContext(ctx,
+		"DELETE FROM "+other+" WHERE parent_guid = ? AND child_name_folded = ? AND layer = ?",
+		req.ParentGUID[:], foldedName, req.LayerName,
+	); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, `
+        INSERT OR REPLACE INTO `+table+`
+            (parent_guid, child_name, child_name_folded, layer, target_type, target_guid, sequence)
+        VALUES (?, ?, ?, ?, 1, NULL, ?)
+    `, req.ParentGUID[:], req.ChildName, foldedName, req.LayerName, req.Sequence); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, "RELEASE SAVEPOINT loregd_hide_entry")
+	return err
+}
+
+func rollbackHideSavepoint(conn *sql.Conn) {
+	// Cleanup must survive a canceled request. If restoration fails, discard
+	// the connection so partially applied work cannot later be committed.
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	if _, err := conn.ExecContext(ctx, "ROLLBACK TO SAVEPOINT loregd_hide_entry"); err != nil {
+		discardConn(conn)
+		return
+	}
+	if _, err := conn.ExecContext(ctx, "RELEASE SAVEPOINT loregd_hide_entry"); err != nil {
+		discardConn(conn)
+	}
 }
