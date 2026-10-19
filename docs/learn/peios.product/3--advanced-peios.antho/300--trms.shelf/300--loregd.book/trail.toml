@@ -1,0 +1,3 @@
+title = "loregd"
+short = "loregd"
+description = "The SQLite registry source: startup, storage, concurrency, and request handling."

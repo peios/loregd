@@ -1,0 +1,94 @@
+.TH LOREGD 8 2026-10-19 "Peios loregd 0.21.13"
+.SH NAME
+loregd \- serve local Peios registry hives
+.SH SYNOPSIS
+.B loregd
+.I hive-name=database-path
+.RI [ hive-name=database-path
+\&...]
+.SH DESCRIPTION
+.B loregd
+stores registry hives in SQLite and serves them to the kernel Local
+Configuration Store through the Registry Source Interface (RSI).
+The kernel owns access checks, namespace resolution, and layers.
+The daemon implements the
+.B registryd
+role; peinit owns its boot service definition.
+.PP
+Each argument declares a hive and its absolute database path.
+Arguments split at the first equals sign.
+Names preserve case but compare using Unicode simple case folding.
+An empty name or path, a duplicate folded name, a slash, backslash, or NUL
+in a hive name, and the reserved name
+.B CurrentUser
+are rejected.
+At least one declaration is required.
+The daemon has no help, version, inspection, or recovery switches.
+.PP
+Startup opens or creates each hive, verifies WAL mode and schema version 1,
+creates a root key if needed, and registers the hives globally.
+An incompatible schema stops startup; no schema migration is performed.
+The daemon reads no configuration file or registry configuration.
+.PP
+Volatile data uses fresh tmpfs-backed databases under
+.IR /run/loregd .
+Restarting the daemon discards all volatile data, including within one boot.
+Ordinary reads remain available while a write transaction is open;
+competing writes return busy.
+Request waits use the kernel's absolute deadline.
+An admitted commit completes its storage outcome even if its caller times out.
+.SH SECURITY
+The daemon runs as SYSTEM and requires
+.B SeTcbPrivilege
+for the kernel registry device.
+It applies a protected SYSTEM-only descriptor to its runtime directory and
+holds an exclusive lifetime lock there.
+A second daemon cannot use the same runtime directory while that lock is held.
+Missing database parent directories are created with mode 0700.
+.SH EXIT STATUS
+.TP
+.B 0
+The registry device closed cleanly, or SIGTERM or SIGINT requested shutdown.
+.TP
+.B 1
+Argument validation, startup preparation, device negotiation, registration,
+or request-loop framing failed.
+Storage errors while handling an individual request produce an RSI error
+response rather than terminating the daemon.
+.SH ENVIRONMENT
+.TP
+.B NOTIFY_SOCKET
+Unix datagram socket used for the readiness message
+.BR READY=1 .
+The daemon sends readiness after registering all hives and before serving.
+Connection and write share a one-second deadline.
+Failure is logged and serving continues.
+If unset, the notification is skipped.
+.SH FILES
+.TP
+.I /dev/pkm_registry
+Kernel device for hive registration and RSI requests.
+RSI lifetime extension version 1 is required.
+.TP
+.I /var/state/loregd/Machine.hive
+Machine hive path selected by peinit.
+The daemon has no built-in path default.
+.TP
+.I /var/state/loregd/Users.hive
+Users hive path selected by peinit.
+.TP
+.I /run/loregd
+Protected tmpfs directory containing volatile databases and the lifetime lock.
+.SH SIGNALS
+.TP
+.B SIGTERM, SIGINT
+Close the device, drain requests, release transactions, and close databases.
+Clean shutdown removes the per-hive volatile stores.
+.SH NOTES
+WAL recovery and orphan cleanup are not backup restoration.
+The daemon creates no automatic startup backup and imports no Windows REGF files.
+A live SQLite hive can have committed data in its WAL; the main file alone
+is not a complete live backup.
+.SH SEE ALSO
+.BR peinit (8),
+.BR peipkg (1)

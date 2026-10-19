@@ -1,0 +1,3 @@
+title = "loregd"
+short = "loregd"
+description = "Local Registry Daemon — the SQLite-backed RSI source that provides the Machine and Users hives: storage, concurrency, and request handling."

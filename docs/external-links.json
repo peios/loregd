@@ -1,0 +1,6 @@
+[
+  "trail: warning: /peios/advanced-peios/loregd/introduction/overview: link '~kernel/internals/lcs/sources/overview' names unknown product 'kernel'",
+  "trail: warning: /peios/advanced-peios/loregd/introduction/overview: link '~kernel/internals/lcs/start-here/overview' names unknown product 'kernel'",
+  "trail: warning: /peios/advanced-peios/loregd/prior-art: link '~kernel/internals/lcs/sources/overview' names unknown product 'kernel'",
+  "trail: warning: /peios/advanced-peios/loregd/startup/startup-sequence: link '~kernel/internals/lcs/backup-and-restore/backup' names unknown product 'kernel'"
+]
