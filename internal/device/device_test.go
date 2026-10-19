@@ -38,7 +38,7 @@ func TestRegSrcRegisterEncoding(t *testing.T) {
 	}
 }
 
-// errReader returns an error after delivering a fixed set of messages.
+// scriptReader returns an error after delivering a fixed set of messages.
 type scriptReader struct {
 	msgs [][]byte
 	idx  int
@@ -162,11 +162,13 @@ func TestServeEndsWhenTheFileIsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }() // The unused write end only keeps the pipe open.
 	done := make(chan error, 1)
 	go func() { done <- Serve(&rw{r: r}, rsi.NewDispatcher()) }()
 	time.Sleep(50 * time.Millisecond)
-	r.Close()
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-done:
 		if err != nil {

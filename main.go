@@ -10,12 +10,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/peios/loregd/internal/config"
 	"github.com/peios/loregd/internal/device"
@@ -24,41 +27,11 @@ import (
 	"github.com/peios/loregd/internal/rsi"
 )
 
-// infoLog writes ordinary progress to stdout; the standard logger keeps stderr
-// for faults.
-//
-// peinit gives a service one pipe per stream and eventd records `is_error`
-// from which one a line arrived on. Go's standard logger writes to stderr, so
-// with loregd's output finally reaching eventd (rather than being written past
-// it onto the console), every ordinary startup line was being recorded as an
-// error — four false errors in the audit trail on every good boot.
-//
-// Only unambiguous progress belongs here. Anything reporting a fault stays on
-// the standard logger, which is most of internal/handler.
+// infoLog sends progress to stdout. peinit and eventd reserve stderr for faults;
+// neither stream should bypass their capture pipes by writing to /dev/console.
 var infoLog = log.New(os.Stdout, "", log.LstdFlags)
 
 func main() {
-	// Logs go to stderr, which is where peinit put them.
-	//
-	// This used to open /dev/console and point the logger there, because
-	// peinit gave registryd capture pipes and then never drained them in
-	// Phase 1: a loregd that printed exactly why it could not serve was
-	// reported to the operator as nothing but "registryd readiness timeout
-	// expired before READY=1". Writing to the console fixed the silence and
-	// cost more than it bought — the lines left the pipe, so they never
-	// reached the pre-eventd buffer and eventd never received loregd's
-	// startup output at all. They were also the only untagged lines in an
-	// otherwise formatted boot log.
-	//
-	// peinit now relays whatever registryd printed when Phase 1 fails
-	// (init/linux/registryd.rs, report_registryd_output), so the diagnostic
-	// is back without the console write. On a good boot these lines go where
-	// every other service's output goes: the pre-eventd buffer, then eventd,
-	// where `evctl` can query them.
-	//
-	// Do not reinstate the console redirect without first checking that
-	// peinit still relays. The two changes are ordered, and reversing only
-	// this half restores the silent failure.
 	if err := run(os.Args[1:]); err != nil {
 		log.Fatal(err)
 	}
@@ -74,38 +47,13 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("volatile storage: %w", err)
 	}
-	defer runtimeStore.Close()
+	defer closeResource("runtime store", runtimeStore)
 
-	hives := make([]*hivedb.HiveDB, 0, len(configs))
-	defer func() {
-		for _, h := range hives {
-			h.Close()
-		}
-	}()
-
-	// Startup steps 1-7 (PSD-006 §2): parse, open, WAL, volatile attach,
-	// schema, first-boot root creation, crash recovery, max sequence.
-	var globalMaxSeq uint64
-	regs := make([]device.HiveRegistration, 0, len(configs))
-	for _, cfg := range configs {
-		h, err := hivedb.OpenIn(cfg.Name, cfg.Path, runtimeStore.Path)
-		if err != nil {
-			return fmt.Errorf("hive %s: %w", cfg.Name, err)
-		}
-		hives = append(hives, h)
-
-		seq, err := h.MaxSequence()
-		if err != nil {
-			return fmt.Errorf("hive %s: %w", cfg.Name, err)
-		}
-		if seq > globalMaxSeq {
-			globalMaxSeq = seq
-		}
-
-		regs = append(regs, device.HiveRegistration{Name: h.Name, RootGUID: h.RootGUID})
-		infoLog.Printf("hive %s: root=%x maxseq=%d", h.Name, h.RootGUID, seq)
+	hives, registrations, maxSequence, err := openHives(configs, runtimeStore.Path)
+	defer closeHives(hives)
+	if err != nil {
+		return err
 	}
-	infoLog.Printf("global max sequence: %d", globalMaxSeq)
 
 	// Wire RSI operation handlers onto a dispatcher.
 	disp := rsi.NewDispatcher()
@@ -118,31 +66,15 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer dev.Close()
+	defer closeResource("registry device", dev)
 	lifetime, err := device.Negotiate(dev)
 	if err != nil {
 		return err
 	}
 	handlers.EnableLeases(lifetime.Renew)
 
-	// Step 9: register all hives, root GUIDs, and the global max sequence.
-	// Through Control rather than dev.Fd(): Fd puts the file in blocking
-	// mode, and a request loop blocked in read() is not woken by the Close
-	// below, so loregd outlived every SIGTERM until its stop timeout killed
-	// it (PEI-1216). Kept in the runtime poller, the read returns once the
-	// file is closed.
-	raw, err := dev.SyscallConn()
-	if err != nil {
-		return fmt.Errorf("register hives: %w", err)
-	}
-	var registerErr error
-	if err := raw.Control(func(fd uintptr) {
-		registerErr = device.Register(fd, regs, globalMaxSeq)
-	}); err != nil {
-		return fmt.Errorf("register hives: %w", err)
-	}
-	if registerErr != nil {
-		return fmt.Errorf("register hives: %w", registerErr)
+	if err := registerHives(dev, registrations, maxSequence); err != nil {
+		return err
 	}
 	infoLog.Printf("loregd: registered %d hive(s); entering request loop", len(hives))
 
@@ -154,13 +86,8 @@ func run(args []string) error {
 
 	// peinit termination (PSD-006 §2 exit behaviour): close the device to
 	// unblock the read loop, then run deferred cleanup.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		sig := <-sigCh
-		infoLog.Printf("loregd: received %s, shutting down", sig)
-		dev.Close()
-	}()
+	stopWatcher := watchShutdown(dev)
+	defer stopWatcher()
 
 	// Step 10: enter the request loop. Returns nil on device close
 	// (LCS shutdown), or an error on malformed framing / I/O failure.
@@ -171,22 +98,132 @@ func run(args []string) error {
 	return nil
 }
 
-// notifyReady sends an sd_notify READY=1 datagram to $NOTIFY_SOCKET so the
-// supervisor (peinit) learns loregd is serving. Best-effort: a no-op when
-// NOTIFY_SOCKET is unset, and a logged warning (never fatal) on dial/write
-// failure — readiness signalling must not block or fail the request loop.
+// openHives returns every opened hive even on failure; the caller owns cleanup.
+func openHives(configs []config.HiveConfig, volatileRoot string) (
+	hives []*hivedb.HiveDB, registrations []device.HiveRegistration, maxSequence uint64, err error,
+) {
+	hives = make([]*hivedb.HiveDB, 0, len(configs))
+	// Startup steps 1-7 (PSD-006 §2): parse, open, WAL, volatile attach,
+	// schema, first-boot root creation, crash recovery, max sequence.
+	registrations = make([]device.HiveRegistration, 0, len(configs))
+	for _, cfg := range configs {
+		hive, err := hivedb.OpenIn(cfg.Name, cfg.Path, volatileRoot)
+		if err != nil {
+			return hives, nil, 0, fmt.Errorf("hive %s: %w", cfg.Name, err)
+		}
+		hives = append(hives, hive)
+
+		seq, err := hive.MaxSequence()
+		if err != nil {
+			return hives, nil, 0, fmt.Errorf("hive %s: %w", cfg.Name, err)
+		}
+		if seq > maxSequence {
+			maxSequence = seq
+		}
+
+		registrations = append(registrations, device.HiveRegistration{
+			Name: hive.Name, RootGUID: hive.RootGUID,
+		})
+		infoLog.Printf("hive %s: root=%x maxseq=%d", hive.Name, hive.RootGUID, seq)
+	}
+	infoLog.Printf("global max sequence: %d", maxSequence)
+
+	return hives, registrations, maxSequence, nil
+}
+
+func closeHives(hives []*hivedb.HiveDB) {
+	for _, hive := range hives {
+		closeResource("hive "+hive.Name, hive)
+	}
+}
+
+// closeResource reports a cleanup failure without replacing the primary result.
+// Device shutdown may already have closed a descriptor to interrupt the read loop.
+func closeResource(name string, resource io.Closer) {
+	if err := resource.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		log.Printf("loregd: close %s: %v", name, err)
+	}
+}
+
+// registerHives uses Control because File.Fd switches the descriptor to blocking
+// mode. Keeping it in the runtime poller lets Close interrupt Serve's read.
+func registerHives(
+	dev *os.File, registrations []device.HiveRegistration, maxSequence uint64,
+) error {
+	raw, err := dev.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("register hives: %w", err)
+	}
+	var registerErr error
+	if err := raw.Control(func(fd uintptr) {
+		registerErr = device.Register(fd, registrations, maxSequence)
+	}); err != nil {
+		return fmt.Errorf("register hives: %w", err)
+	}
+	if registerErr != nil {
+		return fmt.Errorf("register hives: %w", registerErr)
+	}
+	return nil
+}
+
+// watchShutdown owns the signal registration and joins its watcher on cleanup.
+func watchShutdown(dev io.Closer) func() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	stopWatcher := startShutdownWatcher(signals, dev)
+	return func() {
+		signal.Stop(signals)
+		stopWatcher()
+	}
+}
+
+// startShutdownWatcher closes the device once on a signal, or exits without
+// touching it when serving ends first. The caller must invoke its stop function.
+func startShutdownWatcher(signals <-chan os.Signal, dev io.Closer) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case sig := <-signals:
+			infoLog.Printf("loregd: received %s, shutting down", sig)
+			closeResource("registry device", dev)
+		case <-stop:
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+// Readiness is best-effort; a stalled supervisor must not prevent serving.
+const readinessTimeout = time.Second
+
 func notifyReady() {
 	path := os.Getenv("NOTIFY_SOCKET")
 	if path == "" {
 		return
 	}
-	conn, err := net.Dial("unixgram", path)
+	if err := sendReady(path, readinessTimeout); err != nil {
+		log.Printf("loregd: NOTIFY_SOCKET %q: %v", path, err)
+	}
+}
+
+func sendReady(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	dialer := net.Dialer{Deadline: deadline}
+	conn, err := dialer.Dial("unixgram", path)
 	if err != nil {
-		log.Printf("loregd: NOTIFY_SOCKET %q dial failed: %v", path, err)
-		return
+		return fmt.Errorf("dial failed: %w", err)
 	}
-	defer conn.Close()
+	// Closing an unbuffered datagram socket cannot complete a failed notification.
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
 	if _, err := conn.Write([]byte("READY=1\n")); err != nil {
-		log.Printf("loregd: NOTIFY_SOCKET %q write failed: %v", path, err)
+		return fmt.Errorf("write failed: %w", err)
 	}
+	return nil
 }

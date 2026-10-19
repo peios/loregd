@@ -41,7 +41,8 @@ const REG_SRC_REGISTER = 0x40185200
 // reg_src_hive_entry). Little-endian; pointers are 64-bit.
 const (
 	regSrcRegisterArgsSize = 24 // hive_count(4) _pad(4) max_sequence(8) hives_ptr(8)
-	regSrcHiveEntrySize    = 56 // name_len(4) _pad0(4) name_ptr(8) root_guid(16) flags(4) _pad1(4) scope_guid(16)
+	// name_len(4), pad(4), name_ptr(8), root_guid(16), flags(4), pad(4), scope_guid(16).
+	regSrcHiveEntrySize = 56
 )
 
 // HiveRegistration is one hive to register with LCS. loregd registers
@@ -96,11 +97,14 @@ func Register(fd uintptr, hives []HiveRegistration, maxSequence uint64) error {
 	}
 
 	var args [regSrcRegisterArgsSize]byte
-	binary.LittleEndian.PutUint32(args[0:], uint32(len(hives)))                            // hive_count
-	binary.LittleEndian.PutUint64(args[8:], maxSequence)                                   // max_sequence
-	binary.LittleEndian.PutUint64(args[16:], uint64(uintptr(unsafe.Pointer(&entries[0])))) // hives_ptr
+	binary.LittleEndian.PutUint32(args[0:], uint32(len(hives))) // hive_count
+	binary.LittleEndian.PutUint64(args[8:], maxSequence)        // max_sequence
+	// hives_ptr refers to the stable entries backing array until the ioctl returns.
+	binary.LittleEndian.PutUint64(args[16:], uint64(uintptr(unsafe.Pointer(&entries[0]))))
 
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, fd, uintptr(REG_SRC_REGISTER), uintptr(unsafe.Pointer(&args[0])))
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL, fd, uintptr(REG_SRC_REGISTER), uintptr(unsafe.Pointer(&args[0])),
+	)
 	// Keep all kernel-referenced memory alive across the syscall.
 	runtime.KeepAlive(nameBufs)
 	runtime.KeepAlive(entries)
@@ -126,6 +130,8 @@ func Serve(rw io.ReadWriter, d *rsi.Dispatcher) error {
 	return ServeWithLifetime(rw, d, nil)
 }
 
+// ServeWithLifetime additionally fetches kernel-owned deadlines when lifetime is non-nil.
+// It waits for all dispatched handlers before returning; the caller retains rw ownership.
 func ServeWithLifetime(rw io.ReadWriter, d *rsi.Dispatcher, lifetime *Lifetime) error {
 	// Drain in-flight requests before returning so no handler writes to a
 	// device or database that shutdown is about to close.
