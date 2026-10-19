@@ -1,12 +1,13 @@
 package hivedb
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/peios/libp-go/sd"
-	"github.com/peios/libp-go/sddl"
+	"github.com/peios/peios-go/file"
+	"github.com/peios/peios-go/security"
 	"golang.org/x/sys/unix"
 )
 
@@ -18,73 +19,103 @@ type RuntimeStore struct {
 	Path string
 }
 
+type runtimeProtection bool
+
+const (
+	posixOnlyProtection   runtimeProtection = false // For host-side storage tests only.
+	nativeProtection      runtimeProtection = true
+	runtimeDescriptorSDDL                   = "O:SYG:SYD:P(A;OICI;GA;;;SY)"
+)
+
+// OpenRuntimeStore locks and protects a tmpfs directory for this daemon's lifetime.
+// The caller must close every hive before releasing the returned store's lock.
 func OpenRuntimeStore(path string) (*RuntimeStore, error) {
-	return openRuntimeStore(path, true)
+	return openRuntimeStore(path, nativeProtection)
 }
 
-func openRuntimeStore(path string, native bool) (*RuntimeStore, error) {
-	if err := os.Mkdir(path, 0700); err != nil && !os.IsExist(err) {
+func openRuntimeStore(path string, protection runtimeProtection) (*RuntimeStore, error) {
+	if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
 		return nil, err
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	dir := os.NewFile(uintptr(fd), path)
-	defer dir.Close()
-	ok := false
-	if native {
-		var fs unix.Statfs_t
-		if err := unix.Fstatfs(fd, &fs); err != nil {
-			return nil, err
-		}
-		if fs.Type != unix.TMPFS_MAGIC {
-			return nil, fmt.Errorf("volatile runtime directory must be on tmpfs")
-		}
-		// loregd runs as SYSTEM during registry bootstrap. Apply native
-		// authority before creating any files; POSIX mode alone is insufficient.
-		d, err := sddl.Parse("O:SYG:SYD:P(A;OICI;GA;;;SY)")
-		if err != nil {
-			return nil, err
-		}
-		blob, err := d.Marshal()
-		if err != nil {
-			return nil, err
-		}
-		if err := sd.SetSD(sd.Path(path), sd.InfoOwner|sd.InfoGroup|sd.InfoDACL, blob); err != nil {
+	directory := os.NewFile(uintptr(fd), path)
+	defer func() { _ = directory.Close() }() // Read-only directory, not the lifetime lock.
+	if protection == nativeProtection {
+		if err := protectRuntimeDirectory(directory); err != nil {
 			return nil, err
 		}
 	}
-	// FACS requires write authority for an exclusive flock. A directory
-	// opened read-only cannot carry it; use a stable inherited lock file.
-	lockFD, err := unix.Open(filepath.Join(path, ".lock"), unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	lock, err := acquireRuntimeLock(path)
 	if err != nil {
 		return nil, err
 	}
-	lock := os.NewFile(uintptr(lockFD), filepath.Join(path, ".lock"))
-	defer func() {
-		if !ok {
-			lock.Close()
-		}
-	}()
-	if err := unix.Flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := cleanupRuntimeResidue(directory, path); err != nil {
+		_ = lock.Close() // Preserve the cleanup failure; no store is returned.
+		return nil, err
+	}
+	return &RuntimeStore{lock: lock, Path: path}, nil
+}
+
+func protectRuntimeDirectory(directory *os.File) error {
+	var filesystem unix.Statfs_t
+	if err := unix.Fstatfs(int(directory.Fd()), &filesystem); err != nil {
+		return err
+	}
+	if filesystem.Type != unix.TMPFS_MAGIC {
+		return errors.New("volatile runtime directory must be on tmpfs")
+	}
+	// Bootstrap runs as SYSTEM. Apply native authority to the opened directory
+	// before creating files; POSIX mode alone is insufficient on Peios.
+	descriptor, err := security.ParseSDDL(runtimeDescriptorSDDL)
+	if err != nil {
+		return err
+	}
+	blob, err := descriptor.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return file.SetDescriptor(
+		directory, security.InfoOwner|security.InfoGroup|security.InfoDACL, blob,
+	)
+}
+
+func acquireRuntimeLock(path string) (*os.File, error) {
+	// FACS requires write authority for an exclusive flock. A read-only directory
+	// cannot carry it, so use a stable inherited lock file.
+	lockPath := filepath.Join(path, ".lock")
+	flags := unix.O_RDWR | unix.O_CREAT | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	fd, err := unix.Open(lockPath, flags, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	lock := os.NewFile(uintptr(fd), lockPath)
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = lock.Close() // Preserve the lock-acquisition failure.
 		return nil, fmt.Errorf("runtime directory in use: %w", err)
 	}
-	// The protected directory contains only per-hive stores owned by loregd.
-	entries, err := dir.ReadDir(-1)
+	return lock, nil
+}
+
+// cleanupRuntimeResidue runs only while holding the directory's lifetime lock.
+// The protected directory contains only per-hive stores owned by loregd.
+func cleanupRuntimeResidue(directory *os.File, path string) error {
+	entries, err := directory.ReadDir(-1)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for _, entry := range entries {
 		if entry.Name() == ".lock" {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(path, entry.Name())); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	ok = true
-	return &RuntimeStore{lock: lock, Path: path}, nil
+	return nil
 }
 
+// Close releases the runtime lock after the caller has closed every hive.
 func (s *RuntimeStore) Close() error { return s.lock.Close() }
