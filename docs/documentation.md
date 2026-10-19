@@ -26,7 +26,7 @@ the baseline is not a general exemption for broken links.
 Validate the complete publication context before merging documentation:
 
 ```sh
-tools/check-docs --context ../panorama/docs
+tools/check-docs --context ../learn
 ```
 
 This copies the small publication source tree without generated output,
