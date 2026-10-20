@@ -40,7 +40,7 @@ maximum, not a first match.
 [*order.the-ordering-is-a-wire-stability-guarantee-only]
 
 ## Arrays assembled outside one query
-<!-- lint-disable-next-line words -->
+<!-- lint-disable-next-line spelling -->
 [*order.two-arrays-are-assembled-first-and-sorted-afterwards]
 
 Two of those arrays are not a single query's result set. They are

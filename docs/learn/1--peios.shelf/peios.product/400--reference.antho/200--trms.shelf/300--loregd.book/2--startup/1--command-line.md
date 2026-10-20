@@ -44,7 +44,7 @@ the following hold:
 [*cmdline.an-argument-without-an-equals-sign-is-rejected]
 [*cmdline.an-empty-hive-name-or-path-is-rejected]
 [*cmdline.a-database-path-must-be-absolute]
-<!-- lint-disable-next-line words -->
+<!-- lint-disable-next-line spelling -->
 [*cmdline.a-hive-name-may-not-contain-a-separator-or-nul]
 [*cmdline.the-hive-name-currentuser-is-reserved]
 [*cmdline.duplicate-hive-names-are-detected-on-the-folded-name]
