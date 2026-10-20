@@ -33,7 +33,7 @@ The documentation entry points are:
 - [Documentation maintenance](docs/documentation.md)
 - [Security reporting](SECURITY.md)
 
-`docs/learn/` merges into the Peios product in Panorama. Historical source
+`docs/learn/` merges into the Peios product on Peios Learn. Historical source
 documents and their hashes are in `docs/archive/`; they are not published
 as maintained Learn content.
 
