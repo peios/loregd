@@ -4,133 +4,133 @@
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/1--overview.md",
       "archive": "docs/archive/pre-bazel/learn/1--introduction/1--overview.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/1--overview.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/1--overview.md",
       "sha256": "ba100d55d14fef07f960e2f3c84e52161676cebfa526563e5e3c6c43c3f09ab6"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/2--terminology.md",
       "archive": "docs/archive/pre-bazel/learn/1--introduction/2--terminology.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/2--terminology.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/2--terminology.md",
       "sha256": "ad19ecc75b3da86af8cda2284cd1e0a47d8375ac58540088233c9468de366a65"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/1--command-line.md",
       "archive": "docs/archive/pre-bazel/learn/2--startup/1--command-line.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/1--command-line.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/1--command-line.md",
       "sha256": "322f77089195eae427ae8b14bd06072955bdf4fcf8b8fc7edda1dadc7cab43ab"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/2--startup-sequence.md",
       "archive": "docs/archive/pre-bazel/learn/2--startup/2--startup-sequence.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/2--startup-sequence.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/2--startup-sequence.md",
       "sha256": "55cb84caa978f253b226806fbe21518d49eb5247672b8bacf150c8d8039b851a"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/3--exit-and-shutdown.md",
       "archive": "docs/archive/pre-bazel/learn/2--startup/3--exit-and-shutdown.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/3--exit-and-shutdown.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/2--startup/3--exit-and-shutdown.md",
       "sha256": "35cc1482f722cc59f7e4f04cee11f8a97fd37fa200b1c4e235327058ba88e491"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/1--schema-version.md",
       "archive": "docs/archive/pre-bazel/learn/3--storage/1--schema-version.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/1--schema-version.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/1--schema-version.md",
       "sha256": "8e008000011972c18e86eae2eb8537a4c19cd8cfb9ed6e43582be1b5e9fe4e14"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/2--persistent-tables.md",
       "archive": "docs/archive/pre-bazel/learn/3--storage/2--persistent-tables.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/2--persistent-tables.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/2--persistent-tables.md",
       "sha256": "15b2097e99fd4d463638fc3bf054c63549ca51376d4203d2429c629173c4e2f8"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/3--the-volatile-store.md",
       "archive": "docs/archive/pre-bazel/learn/3--storage/3--the-volatile-store.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/3--the-volatile-store.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/3--the-volatile-store.md",
       "sha256": "f7cf96517a962d2ed4d110639f3107f4eb399d6de4a9dd85e92593b02335a05b"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/4--case-folding.md",
       "archive": "docs/archive/pre-bazel/learn/3--storage/4--case-folding.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/4--case-folding.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/3--storage/4--case-folding.md",
       "sha256": "ff2fa2cc9304bba7d12d535dc8ea55c96f570da0c934e0acdc6c189bef3f0e33"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/1--connections.md",
       "archive": "docs/archive/pre-bazel/learn/4--concurrency/1--connections.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/1--connections.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/1--connections.md",
       "sha256": "96ef91183c4e47d59f09f85c8bda922f14258b9630e6455dd92856d3c74af53d"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/2--request-dispatch.md",
       "archive": "docs/archive/pre-bazel/learn/4--concurrency/2--request-dispatch.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/2--request-dispatch.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/2--request-dispatch.md",
       "sha256": "3ad2682c2e10f766cba1c4aab76424d4d8c20d8453a00dc5e72b4210715678ce"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/3--transactions.md",
       "archive": "docs/archive/pre-bazel/learn/4--concurrency/3--transactions.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/3--transactions.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/3--transactions.md",
       "sha256": "8ff9fa76ea0a3b42173fce7c5981a1d5c877af5a895c7750ee6e7faf62cbb45d"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/4--waiting-and-contention.md",
       "archive": "docs/archive/pre-bazel/learn/4--concurrency/4--waiting-and-contention.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/4--waiting-and-contention.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/4--concurrency/4--waiting-and-contention.md",
       "sha256": "8a0f717c1ae2f4fa7ca08f1e38496ab7ae97887d55e14480dd3ec8caeb73cc91"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/1--store-routing.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/1--store-routing.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/1--store-routing.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/1--store-routing.md",
       "sha256": "663e8bea1176e9af4e1e15a2e2369cc8da034a893e77ea45b11598e764f7a4ca"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/2--response-ordering.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/2--response-ordering.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/2--response-ordering.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/2--response-ordering.md",
       "sha256": "6ab7b1e2a5f83dc990d589f636b3569ae839a59b67dd043fb863bc40108e55eb"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/3--key-operations.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/3--key-operations.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/3--key-operations.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/3--key-operations.md",
       "sha256": "0667915f9036b4af7482790319274c082f1c732b784304ea311de6eef3468a8d"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/4--path-entry-operations.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/4--path-entry-operations.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/4--path-entry-operations.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/4--path-entry-operations.md",
       "sha256": "d36b42cffa2ed0e534a906b707ff332d828b83bb40ef1dd89db655e7559a5dfe"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/5--value-operations.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/5--value-operations.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/5--value-operations.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/5--value-operations.md",
       "sha256": "2a88406b332540a60e42e30625b0cfbd3847e36926578d2f315d0de4d89a1f51"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/6--layer-and-maintenance-operations.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/6--layer-and-maintenance-operations.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/6--layer-and-maintenance-operations.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/6--layer-and-maintenance-operations.md",
       "sha256": "78d357f357d6acefdb45608cfb0f398f991a83002d6960b18d3a9db3d9e57cfd"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/7--status-codes.md",
       "archive": "docs/archive/pre-bazel/learn/5--request-handling/7--status-codes.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/7--status-codes.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/5--request-handling/7--status-codes.md",
       "sha256": "a2addf45d2f23515fe7f6ce5489ee9e879ebf4df5eda262227786f4ba7d22101"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/a1--prior-art.md",
       "archive": "docs/archive/pre-bazel/learn/a1--prior-art.md",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/a1--prior-art.md",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/a1--prior-art.md",
       "sha256": "c29b385be10d2822ede83949ac09c43ea4360f77eff4d01f6152791224d08d2e"
     },
     {
       "source": "learn-staging/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/trail.toml",
       "archive": "docs/archive/pre-bazel/learn/trail.toml",
-      "destination": "docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/trail.toml",
+      "destination": "docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/trail.toml",
       "sha256": "d2a797ca7865f0eae2692a172677b0ce409a26e347d7dce420e886695a6324ba"
     },
     {

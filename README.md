@@ -27,8 +27,8 @@ boundaries.
 
 The documentation entry points are:
 
-- [Runtime and storage manual](docs/learn/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/1--overview.md)
-- [Operating loregd](docs/learn/peios.product/750--registry-storage.shelf/100--local-registry.topic/100--operating-loregd.md)
+- [Runtime and storage manual](docs/learn/1--peios.shelf/peios.product/3--advanced-peios.antho/300--trms.shelf/300--loregd.book/1--introduction/1--overview.md)
+- [Operating loregd](docs/learn/1--peios.shelf/peios.product/750--registry-storage.shelf/100--local-registry.topic/100--operating-loregd.md)
 - [Installed manual page](docs/man/loregd.8)
 - [Documentation maintenance](docs/documentation.md)
 - [Security reporting](SECURITY.md)

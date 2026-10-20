@@ -50,3 +50,25 @@ Preserve the affected files and diagnostics before attempting repair. Use
 a verified recovery procedure for the actual backup format. The daemon
 has no `--inspector`, `--recover-from-backup`, or
 `--dangerously-clear-database` switch.
+
+## Separate a source outage from a denied operation
+
+Record the exact operation, key, and error. `reg` status 3 means access
+denied; status 5 includes source and syscall failures. Do not replace a
+source database merely because a setting is missing or unreadable.
+
+The `registryd` role names the selected source provider, not another daemon
+beside loregd. Its startup paths come from Peinit's boot policy. Inspect the
+installed arguments instead of treating a path from an example as a default.
+Do not start a second provider against the live databases to investigate.
+
+On source disconnection, handles remain but operations needing source data
+fail. Re-registration produces watch overflow recovery: clients must reread
+the state they need. A timed-out mutation or commit can already have reached
+storage, so inspect live state before repeating it after recovery.
+
+LCS owns access checks, routing, layers, and watches. That does not make a
+source untrusted: access checks use descriptors returned by the source, and
+structural validation cannot detect every well-formed false descriptor or
+entry. Protect the source process, launch configuration, and backing files
+as part of the trusted computing base.
