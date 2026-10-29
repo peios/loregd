@@ -1,0 +1,45 @@
+{
+  "sources": [
+    {
+      "prefix": "github.com/gcslib/go",
+      "git": "https://github.com/gcslib/go",
+      "dir": "",
+      "rev": "HEAD"
+    },
+    {
+      "prefix": "github.com/gcslib/buildenv",
+      "git": "https://github.com/gcslib/buildenv",
+      "dir": "",
+      "rev": "HEAD"
+    },
+    {
+      "prefix": "github.com/gcslib/gcc",
+      "git": "https://github.com/gcslib/gcc",
+      "dir": "",
+      "rev": "HEAD"
+    }
+  ],
+  "libraries": [
+    {
+      "path": "github.com/gcslib/buildenv",
+      "git": "https://github.com/gcslib/buildenv",
+      "dir": "",
+      "commit": "533389a1cdade6dfb71afaf609bf13c22285dd17",
+      "tree": "a550d562a8baa002c5979c5c635467544e8ff970decd7e97472836193242c6b8"
+    },
+    {
+      "path": "github.com/gcslib/gcc",
+      "git": "https://github.com/gcslib/gcc",
+      "dir": "",
+      "commit": "ac34ea87ecad9664524ca29a1d651eecaf6a4199",
+      "tree": "aab08636ace401a8b5d76372594423d28ea15c3395e65197b57e2efb954cd0e0"
+    },
+    {
+      "path": "github.com/gcslib/go",
+      "git": "https://github.com/gcslib/go",
+      "dir": "",
+      "commit": "43c9d5c32384753b682726ca026c324990a7630e",
+      "tree": "e2d85e3ec9fba44588b5a0ffc910c8e5f281e410bf379099b4f00a3a41e0b805"
+    }
+  ]
+}
