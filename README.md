@@ -11,17 +11,15 @@ those tests do not establish native registry or boot qualification.
 
 ## Build and test
 
-Build the daemon, run the tests, and produce the package store:
+Build the daemon and run the tests with pekit:
 
 ```sh
-./bazel build //:loregd
-./bazel test //...
-./bazel build //:packages
+pekit build loregd
+pekit test
 ```
 
-The package store is `bazel-bin/packages.store`. See
-[Building and Testing](docs/building.md) for prerequisites and validation
-boundaries.
+See [Building and Testing](docs/building.md) for prerequisites and
+validation boundaries.
 
 ## Documentation
 

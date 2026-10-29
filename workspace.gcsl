@@ -1,0 +1,16 @@
+# The loregd package: pekit builds it with the go library's pinned Go, on
+# the buildenv library's busybox environment, and its race test with the gcc
+# library's Bootlin C toolchain, which the race detector's runtime links
+# with.
+import Toolchain::* from "github.com/gcslib/buildenv"
+import Toolchain::* from "github.com/gcslib/gcc"
+import Toolchain::* from "github.com/gcslib/go"
+import Toolchain from toolchain
+
+pekitconf = {
+    toolchains = [
+        Toolchain::C gcc_x86_64,
+        Toolchain::Go go_1_26,
+        Toolchain::BuildEnv busybox_x86_64,
+    ]
+}

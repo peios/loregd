@@ -1,0 +1,60 @@
+# loregd's tests: each package's tests, as `go test` builds and runs them,
+# `go vet`'s checks, as Bazel's `nogo` made them, and the tests again with
+# the race detector, as `go test -race` runs them.
+#
+# A test's own code runs in a hermetic step of its own, so what it plans,
+# builds or fetches is in its parameters' defaults.
+import "github.com/gcslib/go"
+
+# Unicode 16.0.0's case folding, which `internal/fold`'s table is generated
+# from, as its header says.
+let CASE_FOLDING = "/work/data/CaseFolding.txt"
+
+# Runs each of `tests`, given `given` and `env`.
+fn ran(tests: List<go.GoTest>, given: List<{at: String, place: Dir | File}> = [], env: List<Entry<String>> = []) -> {} {
+    let each = for test in tests { = go.run_test(test, given = given, env = env) }
+}
+
+def test main(tests: List<go.GoTest> = go.tests(module(), ".")) {
+    = ran(tests)
+}
+
+def test config(tests: List<go.GoTest> = go.tests(module(), "./internal/config")) {
+    = ran(tests)
+}
+
+def test device(tests: List<go.GoTest> = go.tests(module(), "./internal/device")) {
+    = ran(tests)
+}
+
+# `fold`'s, with Unicode's own `CaseFolding.txt`, which its table is
+# checked against, for every scalar.
+def test fold(
+    tests: List<go.GoTest> = go.tests(module(), "./internal/fold"),
+    folding: File = fetch(
+        "https://www.unicode.org/Public/16.0.0/ucd/CaseFolding.txt",
+        sha256 = "6f1f9c588eb4a5c718d9e8f93b782685e5c7fec872cf05e8e6878053599e09bb",
+    ),
+) {
+    = ran(tests, given = [{at = CASE_FOLDING; place = folding}], env = [{key = "CASEFOLDING_TXT"; value = CASE_FOLDING}])
+}
+
+def test handler(tests: List<go.GoTest> = go.tests(module(), "./internal/handler")) {
+    = ran(tests)
+}
+
+def test hivedb(tests: List<go.GoTest> = go.tests(module(), "./internal/hivedb")) {
+    = ran(tests)
+}
+
+def test rsi(tests: List<go.GoTest> = go.tests(module(), "./internal/rsi")) {
+    = ran(tests)
+}
+
+def test sd(tests: List<go.GoTest> = go.tests(module(), "./internal/sd")) {
+    = ran(tests)
+}
+
+def test vet(checked: {} = go.vet(module())) {}
+
+def test race(checked: {} = go.race(module())) {}

@@ -1,84 +1,106 @@
 # Building and Testing
 
-Bazel builds loregd and its packages from the declared Go dependency graph.
-The repository launcher selects the version in `.bazelversion`; Go and
-module versions belong to the Bazel module configuration and lockfile.
-Do not change generated dependency metadata independently of its inputs.
+Use pekit to build loregd and run its tests. Pekit compiles each Go package
+on its own, so a change rebuilds only the packages it reaches. The
+supported development host is x86-64 Linux.
 
-## Development host
+## Before you start
 
-Use Linux for the development build. Run the launcher from the repository
-root. The first build needs access to the declared tool and dependency
-archives; later actions reuse Bazel's cache.
+You need pekit and Git. Everything else is pinned and fetched by pekit on
+the first build: Go 1.26.8, the busybox build environment, the Bootlin C
+toolchain the race detector links with, and the modules `go.sum` names. The
+first build needs network access. Later builds find what they need in
+pekit's store, and every step runs without network access in a sandbox that
+holds only its declared inputs.
 
-Build the daemon and run the test targets:
+The build files use the gcslib libraries named in `workspace.gcsl`.
+`pekit lock` pins their commits in `pekit.lock`.
 
-```sh
-./bazel build //:loregd
-./bazel test //...
-```
-
-The tests exercise argument validation, SQLite state, case folding, security
-descriptors, RSI framing, and handlers. Test helpers replace native kernel
-operations where needed. A successful host test does not establish that
-KACS protection, kernel registration, or service startup works on Peios.
-
-## Packages
-
-Build all package outputs together:
+## Build
 
 ```sh
-./bazel build //:packages
+pekit build loregd
 ```
 
-`bazel-bin/packages.store` contains manifests and content-addressed blobs.
-The package set is:
+Pekit prints where the daemon is, under `pekit-out/loregd/`. It is pure Go,
+a position-independent executable bound at load time, with a GNU build ID
+derived from Go's, as the Bazel build made it.
 
-| Package | Contents |
+## Test
+
+```sh
+pekit test
+```
+
+Each package's tests are a test of their own, named after the package:
+`main` for the daemon's own, then `config`, `device`, `fold`, `handler`,
+`hivedb`, `rsi`, and `sd`. Two more tests check the whole module:
+
+| Test | Check |
 |---|---|
-| `dev.peios.loregd` | Daemon, man page, and protected state-directory payload |
-| `dev.peios.loregd-debuginfo` | Debug information matching the runtime executable |
-| `dev.peios.loregd-debugsource` | Go dependency sources and the pinned standard-library source set |
-| `dev.peios.loregd-source` | Repository source and separate dependency source tree |
+| `vet` | `go vet` of every package, as Bazel's `nogo` checked it |
+| `race` | Every package's tests again, with the race detector |
 
-Package provenance sidecars record the `registryd` claim, dependencies,
-and state-directory security descriptor and mode `0700`. The canonical
-manifest format is unchanged. Those sidecar declarations do not establish
-that a package installer applies the claim or security metadata.
+`fold` is given Unicode 16.0.0's `CaseFolding.txt`, pinned by its SHA-256.
+It checks the generated table against that file for every scalar.
 
-The source package includes dependencies under `/usr/src/loregd-dependencies`.
-Debug source includes the pinned standard-library source set, not only the
-standard-library files selected by this executable.
+A test whose inputs did not change is found in the store and not run again.
+The tests exercise argument validation, SQLite state, case folding,
+security descriptors, RSI framing, and handlers. Test helpers replace
+native kernel operations where needed. A successful host test does not
+establish that KACS protection, kernel registration, or service startup
+works on Peios.
 
-`build/version.bzl` retains version `0.21.13`; package revision `-1` is a
-packaging revision. Building those artifacts does not create a release or
-establish a native qualification result. Keep each runtime package with its
-matching debug and source packages.
+For the full contributor check, install the pinned PSC tools into a
+directory outside the repository, then run the shared entry point:
+
+```sh
+python3 tools/prepare-style-tools.py "$HOME/.cache/loregd-style"
+export PEIOS_STYLE_BIN="$HOME/.cache/loregd-style/bin"
+tools/check
+```
+
+`tools/check` checks owned source formatting and lint with gofmt, Ruff,
+ShellCheck, shfmt, and Prettier, then runs `pekit test`. The style checks
+use the host's `gofmt`. The tool versions and hashes are recorded in
+`tools/style-tools.lock.json`. GitHub's workflow runs the style checks
+alone; builds and tests run with pekit.
+
+## Modules
+
+Keep module versions in `go.mod` and `go.sum`, and change them with the go
+command. `go.pins` records the SHA-256 of each module file `go.sum` names,
+which pekit fetches it by. After a change to `go.sum`, write it again:
+
+```sh
+pekit run pin_modules
+```
+
+The script fetches each file from the Go module proxy with the host's
+`curl`. Review a change to `go.pins` as a change to `go.sum` is reviewed.
+A build fails, naming each file, when `go.pins` lacks a file `go.sum`
+names. The go command also checks every module against `go.sum`.
+
+## How the build is planned
+
+`build.gcsl` plans the module with the gcslib go library's `workspace`.
+The go command lists what each program and test needs, package by package,
+and pekit compiles each package as a step. Planning reads the sources'
+imports, as the go command does, so an edit plans again. Only the packages
+whose files or dependencies changed are compiled again.
+
+## Not built with pekit yet
+
+Packages, the offline build, and builds with the native Peios toolchain
+are not yet built with pekit. The package definitions and native build
+settings from the Bazel build are kept outside this repository until they
+are. The last Bazel release version was `0.21.13`.
+
+The integration suite runs against a booted Peios image through
+`peios-qualify`, as `tests/integration/README.md` describes. It is not part
+of `pekit test`.
 
 ## Native qualification
-
-For a native package build, run inside a prepared Peios userspace with
-`PEIOS_RUSTC` set to the Peios Rust compiler used for the PPK tools:
-
-```sh
-./bazel build --config=peios //:packages
-```
-
-For an offline build, acquire a snapshot on a connected development host:
-
-```sh
-tools/offline-build acquire /absolute/path/to/snapshot
-```
-
-Make that snapshot and the same source revision available inside the prepared
-userspace, then run `tools/offline-build build /path/to/snapshot /path/to/work`.
-The helper checks the module lock, disables downloads, and uses a separate
-writable work directory. The caller supplies isolation and the native tools;
-the helper does not provision a Peios system.
-
-The daemon uses the same pinned pure-Go SDK as the development build; it
-does not require a separate native Go compiler. Native PPK tooling and
-package creation are distinct from runtime qualification.
 
 Run native qualification in a disposable Peios guest, using isolated hive
 files. The daemon applies KACS descriptors to its runtime directory,

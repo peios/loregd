@@ -1,5 +1,7 @@
-name: Loregd build and tests
+name: loregd style
 
+# Checks owned source style only. Builds and tests run with pekit on the
+# build server and with `tools/check` locally, not here.
 on:
     pull_request:
     push:
@@ -13,18 +15,13 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    check:
+    style:
         runs-on: ubuntu-24.04
-        timeout-minutes: 60
+        timeout-minutes: 10
         steps:
             - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
               with:
                   persist-credentials: false
-            - name: Install Linux development tools
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y build-essential pkg-config python3 python3-venv binutils
-                  rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
             - name: Select the Go formatter
               uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
               with:
@@ -35,22 +32,7 @@ jobs:
                   node-version: "22.22.1"
             - name: Prepare pinned PSC style tools
               run: python3 tools/prepare-style-tools.py "$RUNNER_TEMP/loregd-style"
-            - name: Check style, build, races and packages
+            - name: Check style
               env:
                   PEIOS_STYLE_BIN: ${{ runner.temp }}/loregd-style/bin
-                  CARGO_TARGET_DIR: ${{ runner.temp }}/loregd-cargo-checks
-              run: tools/check
-            - name: Check out the documentation compiler
-              uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-              with:
-                  repository: peios/trail
-                  ref: 1d662e98cbcbdd5c51c01533afcab7f5723a2eff
-                  path: .ci-trail
-                  persist-credentials: false
-            - name: Build the pinned documentation compiler
-              working-directory: .ci-trail
-              run: tools/bazel build //:trail
-            - name: Check documentation
-              env:
-                  TRAIL: ${{ github.workspace }}/.ci-trail/bazel-bin/trail
-              run: tools/check-docs
+              run: python3 tools/style-check.py

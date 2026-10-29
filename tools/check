@@ -1,9 +1,10 @@
 #!/bin/sh
-# Bazel builds the daemon and packages; Go's race detector checks concurrency.
+# The contributor check: owned source style, then pekit's tests, which
+# build every package, run each package's tests, check them with go vet,
+# and run them again with the race detector.
 set -eu
+
 repo=$(CDPATH="" cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 python3 tools/style-check.py
-./bazel test //...
-./bazel build //:packages
-./bazel test --config=race //:go_default_test //internal/...
+pekit test

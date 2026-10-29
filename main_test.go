@@ -13,7 +13,7 @@ import (
 
 func notificationSocket(t *testing.T) (*net.UnixConn, string) {
 	t.Helper()
-	// Keep socket paths short even when Bazel's test directory is deeply nested.
+	// Keep socket paths short even when the test's directory is deeply nested.
 	directory, err := os.MkdirTemp("", "loregd-notify-")
 	if err != nil {
 		t.Fatal(err)
