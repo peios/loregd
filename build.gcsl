@@ -1,0 +1,20 @@
+# The loregd daemon, each Go package compiled on its own (see the go
+# library's `workspace`), as Bazel built it: pure Go, a position-independent
+# executable, bound now, with a GNU build ID derived from Go's.
+import "github.com/gcslib/go"
+
+# The loregd module, planned from its modules, which `go.sum` names and
+# `go.pins` pins.
+def module() -> go.GoWorkspace {
+    = go.workspace(dir("."), file("go.sum"), file("go.pins"), buildmode = "pie")
+}
+
+def build loregd() {
+    = go.bin(module(), ".", ldflags = ["-B", "gobuildid", "-bindnow"])
+}
+
+# Writes `go.pins` again from `go.sum`, with the network: run it after a
+# change to `go.sum`, and review the change to `go.pins` as `go.sum`'s.
+def script pin_modules() {
+    let count = go.pin_modules(file("go.sum"), "{dir(".").path}/go.pins")
+}

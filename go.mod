@@ -18,6 +18,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-// Keep Bazel tool dependencies from upgrading the daemon dependency graph.
-replace golang.org/x/sys => golang.org/x/sys v0.42.0
