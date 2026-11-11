@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	"github.com/peios/peios-go/file"
-	"github.com/peios/peios-go/security"
 	"golang.org/x/sys/unix"
 )
 
@@ -19,22 +18,14 @@ type RuntimeStore struct {
 	Path string
 }
 
-type runtimeProtection bool
-
-const (
-	posixOnlyProtection   runtimeProtection = false // For host-side storage tests only.
-	nativeProtection      runtimeProtection = true
-	runtimeDescriptorSDDL                   = "O:SYG:SYD:P(A;OICI;GA;;;SY)"
-)
-
 // OpenRuntimeStore locks and protects a tmpfs directory for this daemon's lifetime.
 // The caller must close every hive before releasing the returned store's lock.
 func OpenRuntimeStore(path string) (*RuntimeStore, error) {
-	return openRuntimeStore(path, nativeProtection)
+	return openRuntimeStore(path, file.Open, true)
 }
 
-func openRuntimeStore(path string, protection runtimeProtection) (*RuntimeStore, error) {
-	if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
+func openRuntimeStore(path string, open directoryOpener, verifyTmpfs bool) (*RuntimeStore, error) {
+	if err := ensureDirectory(path, open); err != nil {
 		return nil, err
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -43,8 +34,8 @@ func openRuntimeStore(path string, protection runtimeProtection) (*RuntimeStore,
 	}
 	directory := os.NewFile(uintptr(fd), path)
 	defer func() { _ = directory.Close() }() // Read-only directory, not the lifetime lock.
-	if protection == nativeProtection {
-		if err := protectRuntimeDirectory(directory); err != nil {
+	if verifyTmpfs {
+		if err := requireTmpfs(directory); err != nil {
 			return nil, err
 		}
 	}
@@ -59,7 +50,7 @@ func openRuntimeStore(path string, protection runtimeProtection) (*RuntimeStore,
 	return &RuntimeStore{lock: lock, Path: path}, nil
 }
 
-func protectRuntimeDirectory(directory *os.File) error {
+func requireTmpfs(directory *os.File) error {
 	var filesystem unix.Statfs_t
 	if err := unix.Fstatfs(int(directory.Fd()), &filesystem); err != nil {
 		return err
@@ -67,19 +58,7 @@ func protectRuntimeDirectory(directory *os.File) error {
 	if filesystem.Type != unix.TMPFS_MAGIC {
 		return errors.New("volatile runtime directory must be on tmpfs")
 	}
-	// Bootstrap runs as SYSTEM. Apply native authority to the opened directory
-	// before creating files; POSIX mode alone is insufficient on Peios.
-	descriptor, err := security.ParseSDDL(runtimeDescriptorSDDL)
-	if err != nil {
-		return err
-	}
-	blob, err := descriptor.MarshalBinary()
-	if err != nil {
-		return err
-	}
-	return file.SetDescriptor(
-		directory, security.InfoOwner|security.InfoGroup|security.InfoDACL, blob,
-	)
+	return nil
 }
 
 func acquireRuntimeLock(path string) (*os.File, error) {

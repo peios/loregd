@@ -10,8 +10,12 @@ separate SQLite database as `volatile`, using WAL and private connection
 caches. Its files live on tmpfs beneath `/run/loregd/hive-<random>/`.
 [*volatile.each-hive-gets-a-private-tmpfs-wal-database]
 
-The runtime directory has a protected, inheritable SYSTEM-only KACS DACL.
-Startup verifies that it is on tmpfs and refuses symlinks. A stable `.lock`
+New runtime directories have a protected, inheritable KACS DACL granting
+full control to SYSTEM and Administrators, with SYSTEM ownership. The
+descriptor is supplied in the creation call, including for each per-hive
+directory. Existing directories retain their policy (§2.2).
+Startup verifies that `/run/loregd` is on tmpfs and refuses symlinks.
+A stable `.lock`
 file prevents two daemon instances from cleaning up each other's stores.
 [*volatile.runtime-storage-is-protected-and-exclusively-owned]
 

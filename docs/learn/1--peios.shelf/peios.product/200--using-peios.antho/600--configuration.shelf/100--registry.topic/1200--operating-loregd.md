@@ -17,7 +17,7 @@ The daemon needs these resources before it can serve the registry:
 - A SYSTEM token and `SeTcbPrivilege` for native protection and RSI access.
 - A Peios kernel with RSI lifetime extension version 1.
 - Writable persistent database paths supplied as hive declarations.
-- A tmpfs-backed `/run/loregd` directory that it can protect and lock.
+- A tmpfs-backed `/run` where it can create and lock `/run/loregd`.
 
 peinit supplies `Machine=/var/state/loregd/Machine.hive` and
 `Users=/var/state/loregd/Users.hive`. loregd itself has no path defaults and
