@@ -21,7 +21,7 @@ func checkedDirectoryOpener(t *testing.T, created *[]string) directoryOpener {
 		// Observe policy before the host stand-in creates the directory: this
 		// catches any return to mkdir followed by SetDescriptor.
 		if options.Disposition != file.CreateNew || options.Options != file.Directory ||
-			options.Flags != file.NoFollow || options.Access != file.ReadAttributes {
+			options.Flags != file.NoFollow || options.Access != file.ListDirectory|file.ReadAttributes {
 			t.Fatalf("unsafe directory creation options: %+v", options)
 		}
 		sd, err := security.ParseSDDL(storageDirectorySDDL)

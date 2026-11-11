@@ -27,8 +27,10 @@ func createDirectory(path string, open directoryOpener) error {
 	if err != nil {
 		return err
 	}
+	// KACS needs a data right to select the handle's file mode. Metadata
+	// rights alone return EINVAL; LIST_DIRECTORY is the directory read right.
 	directory, _, err := open(path, file.OpenOptions{
-		Access: file.ReadAttributes, Disposition: file.CreateNew,
+		Access: file.ListDirectory | file.ReadAttributes, Disposition: file.CreateNew,
 		Options: file.Directory, Flags: file.NoFollow, Descriptor: blob,
 	})
 	if err != nil {
