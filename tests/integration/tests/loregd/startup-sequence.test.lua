@@ -51,7 +51,7 @@ end
 test("any startup failure is fatal and exits non-zero",
     { spec = "loregd *startup.any-startup-failure-is-fatal-and-exits-non-zero" },
     function(t)
-        -- A hive whose parent directory cannot be created (MkdirAll under
+        -- A hive whose parent directory cannot be created (creation under
         -- /proc fails) makes step 2 fail; startup must abort non-zero
         -- rather than come up serving.
         local r = loregd.spawn(vm, { "Bad=/proc/nonexistent/deep/x.hive" }):wait("10s")
@@ -81,8 +81,7 @@ test("arguments are parsed and validated before any database is opened",
 
 -- ---- Step 2: open each hive database ---------------------------------
 
--- "For each declared hive, create the database file's parent directory if
---  it is absent (mode 0700), then open — or create — the SQLite database."
+-- Missing hive parents receive their descriptor in the creation call.
 test("each declared hive's database is opened or created",
     { spec = "loregd *startup.each-declared-hives-database-is-opened-or-created" },
     function(t)
@@ -98,10 +97,8 @@ test("each declared hive's database is opened or created",
         proc:kill("kill")
     end)
 
--- "create the database file's parent directory if it is absent (mode
---  0700)."
-test("a missing parent directory is created with mode 0700",
-    { spec = "loregd *startup.a-missing-parent-directory-is-created-mode-0700" },
+test("missing parent directories are created with protected native descriptors",
+    { spec = "loregd *startup.missing-directories-receive-their-descriptor-at-creation" },
     function(t)
         local dir = MOUNT .. "/private-state"
         vm:run("rm -rf '" .. dir .. "'")
@@ -109,9 +106,12 @@ test("a missing parent directory is created with mode 0700",
         -- The absent parent (and the file) came into being at startup.
         t:assert_eq(vm:run("test -d '" .. dir .. "'").exit_code, 0,
             "the missing parent directory was created")
-        local mode = vm:run("stat -c %a '" .. dir .. "'").stdout:gsub("%s+$", "")
-        t:assert_eq(mode, "700",
-            "the created directory is private to the service (0700), got " .. mode)
+        for _, path in ipairs({ dir, dir .. "/nested" }) do
+            local shown = vm:run("sd show --sddl '" .. path .. "'")
+            t:assert_eq(shown.exit_code, 0, "the native descriptor is readable: " .. shown.stderr)
+            t:assert(shown.stdout:find("O:SYG:SYD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)", 1, true),
+                "the created directory has the recipe's descriptor: " .. shown.stdout)
+        end
         proc:kill("kill")
     end)
 

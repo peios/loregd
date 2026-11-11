@@ -14,22 +14,39 @@ is best effort; a failure is logged and serving continues.
 [*startup.arguments-are-parsed-and-validated-first]
 
 loregd extracts the hive-to-database mapping and validates it as described
-in §2.1. Before opening a hive, it creates or opens `/run/loregd`, verifies
-tmpfs, applies its SYSTEM-only descriptor, and takes the runtime lock.
+in §2.1. Before opening a hive, it ensures `/run/loregd` exists, verifies
+tmpfs, and takes the runtime lock. Missing directories are created with
+the descriptor below in the creation call; no later restamping is needed.
 It removes old volatile stores only after taking that lock.
 
 ## 2. open each hive database
 [*startup.each-declared-hives-database-is-opened-or-created]
 
-For each declared hive, create the database file's parent directory if it
-is absent (mode `0700`), then open; or create; the SQLite database at
-that path.
-[*startup.a-missing-parent-directory-is-created-mode-0700]
-Registry hives can contain credentials and security policy, so
-the fallback directory is private to the service. A packaged system normally
-receives the same protected directory from the `dev.peios.loregd` package,
-but a first boot onto an empty `/var/state` still works without anything
-having prepared it.
+For each declared hive, create missing database parent directories before
+opening SQLite. This includes `/var/state/loregd` on a standard first boot.
+loregd creates each missing ancestor, `/run/loregd`, and each fresh volatile
+store directory with the same explicit descriptor in the native creation
+call:
+
+```text
+O:SYG:SYD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)
+```
+
+SYSTEM owns the directory. Its protected DACL grants full control only to
+SYSTEM and Administrators, inherited by files and directories. Native
+creation failure aborts startup; there is no POSIX-only fallback in the
+daemon.
+[*startup.missing-directories-receive-their-descriptor-at-creation]
+
+Existing directories keep their ownership, descriptor, and mode. A path
+that exists but is not a directory, including a symbolic link, fails with
+an error naming the path. If another creator wins a race, loregd checks
+the resulting type and leaves an existing directory unchanged.
+[*startup.existing-directories-are-preserved-and-other-types-are-rejected]
+
+ppk packages contain only `/usr`. loregd needs its storage before it can
+serve the registry, so it prepares these directories itself; registry-backed
+path provisioning runs too late for this Phase 1 service.
 
 Four pieces of connection state are established immediately:
 
@@ -54,7 +71,7 @@ Each `database/sql` handle is limited to a single underlying connection.
 
 Each hive gets a fresh tmpfs-backed SQLite database, attached as `volatile`
 and put in WAL mode with private caches. Before opening hives, loregd
-protects and locks `/run/loregd`, verifies tmpfs, and removes old volatile
+ensures and locks `/run/loregd`, verifies tmpfs, and removes old volatile
 stores left by a crash (§3.3). It never reuses a prior process's volatile
 data.
 [*startup.volatile-stores-are-fresh-and-use-tmpfs-wal]

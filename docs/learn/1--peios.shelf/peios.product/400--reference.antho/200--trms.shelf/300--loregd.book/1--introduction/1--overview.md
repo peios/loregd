@@ -21,12 +21,10 @@ path to a running system; if loregd does not come up, very little else
 does.
 [*overview.loregd-provides-the-machine-and-users-hives-at-boot]
 
-The `dev.peios.loregd` package contains the daemon, man page, and empty
-state directory. Its provenance metadata declares the `registryd` provider
-and the directory protection; installer support for applying that metadata
-is a separate integration requirement. Debugging support is split
-into `dev.peios.loregd-debuginfo` and `dev.peios.loregd-debugsource`; the
-matching build inputs are published as `dev.peios.loregd-source`.
+The `dev.peios.loregd` package contains the daemon and man page under `/usr`
+and provides the `registryd` role. loregd creates missing state and runtime
+directories with their security descriptors at startup (§2.2); no package
+installation step creates `/var/state/loregd`.
 [*overview.the-loregd-package-installs-the-daemon-and-its-role-provider]
 
 peinit owns the compiled-in Phase-1 service definition, so loregd does not

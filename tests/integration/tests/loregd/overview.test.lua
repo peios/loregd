@@ -114,7 +114,7 @@ test("the loregd package installs the daemon and its registryd role provider",
             " vs loregd -> " .. loregd_target.stdout)
 
         t:assert_eq(vm:run("test -d /var/state/loregd").exit_code, 0,
-            "the package-owned protected state directory /var/state/loregd exists")
+            "loregd created its state directory /var/state/loregd at startup")
     end)
 
 -- §1.1: "peinit owns the compiled-in Phase-1 service definition, so Loregd

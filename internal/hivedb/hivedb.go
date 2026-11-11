@@ -24,6 +24,7 @@ import (
 
 	"github.com/peios/loregd/internal/fold"
 	"github.com/peios/loregd/internal/sd"
+	"github.com/peios/peios-go/file"
 )
 
 const (
@@ -58,18 +59,32 @@ type HiveDB struct {
 	Gate         Gate // coordinates publication across the two WAL databases
 }
 
-// Open opens (or creates) a hive database at path. It enables WAL
-// mode, attaches the volatile store, creates/migrates the schema,
-// performs first-boot root creation if needed, runs crash recovery,
-// and creates the read connection pool.
+// Open is the host-side storage-test entry point. It uses POSIX directories
+// beneath the host's temporary directory. The daemon uses OpenIn, whose
+// directories always require native creation with a Peios descriptor.
 func Open(name, path string) (*HiveDB, error) {
-	return OpenIn(name, path, os.TempDir())
+	return openIn(name, path, os.TempDir(), openHostDirectory)
+}
+
+func openHostDirectory(path string, _ file.OpenOptions) (*os.File, file.Status, error) {
+	if err := os.Mkdir(path, 0o700); err != nil {
+		return nil, 0, err
+	}
+	directory, err := os.Open(path)
+	return directory, file.Created, err
 }
 
 // OpenIn creates a fresh volatile database beneath volatileRoot. Production
 // passes the protected tmpfs runtime directory; tests may use a temporary dir.
 func OpenIn(name, path, volatileRoot string) (_ *HiveDB, err error) {
-	volatileDir, err := os.MkdirTemp(volatileRoot, "hive-")
+	return openIn(name, path, volatileRoot, file.Open)
+}
+
+func openIn(name, path, volatileRoot string, open directoryOpener) (_ *HiveDB, err error) {
+	if err := ensureDirectory(filepath.Dir(path), open); err != nil {
+		return nil, fmt.Errorf("create hive directory for %s: %w", name, err)
+	}
+	volatileDir, err := createVolatileDirectory(volatileRoot, open)
 	if err != nil {
 		return nil, fmt.Errorf("create volatile store: %w", err)
 	}
@@ -79,17 +94,6 @@ func OpenIn(name, path, volatileRoot string) (_ *HiveDB, err error) {
 		}
 	}()
 	volatilePath := filepath.Join(volatileDir, "volatile.db")
-	// loregd owns its hive storage: create the database's parent directory if it
-	// is absent (e.g. /var/state/loregd on first boot) so SQLite can create the
-	// file. Registry hives can contain credentials and other security policy, so
-	// a fallback directory created outside the package-managed image must not be
-	// readable by ordinary processes. The DB file itself is created by the
-	// driver and inherits that protected parent.
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create hive directory for %s: %w", name, err)
-		}
-	}
 
 	// Write connection: used for all mutations and startup.
 	writeDB, err := openConn(path, volatilePath)

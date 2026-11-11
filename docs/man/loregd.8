@@ -41,10 +41,22 @@ An admitted commit completes its storage outcome even if its caller times out.
 The daemon runs as SYSTEM and requires
 .B SeTcbPrivilege
 for the kernel registry device.
-It applies a protected SYSTEM-only descriptor to its runtime directory and
+It creates missing runtime directories with protected descriptors and
 holds an exclusive lifetime lock there.
 A second daemon cannot use the same runtime directory while that lock is held.
-Missing database parent directories are created with mode 0700.
+Missing database parent directories, including /var/state/loregd, and fresh
+per-hive volatile directories are created with the same descriptor:
+.PP
+.nf
+O:SYG:SYD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)
+.fi
+.PP
+The native creation call applies this descriptor before the directory becomes
+visible. SYSTEM owns it; SYSTEM and Administrators have inheritable full control.
+Existing directories retain their ownership, descriptor and mode.
+A non-directory or symbolic link at a required directory path fails startup
+with an error naming the path. Native creation errors are fatal; the daemon
+does not fall back to POSIX-only creation.
 .SH EXIT STATUS
 .TP
 .B 0

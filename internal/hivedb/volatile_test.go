@@ -62,11 +62,11 @@ func TestSameHiveNameHasIndependentVolatileStore(t *testing.T) {
 
 func runRuntimeCrashChild(t *testing.T, root string) {
 	t.Helper()
-	store, err := openRuntimeStore(filepath.Join(root, "run"), posixOnlyProtection)
+	store, err := openRuntimeStore(filepath.Join(root, "run"), openHostDirectory, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := OpenIn("Machine", filepath.Join(root, "Machine.db"), store.Path)
+	h, err := openIn("Machine", filepath.Join(root, "Machine.db"), store.Path, openHostDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestRuntimeStoreCrashCleanup(t *testing.T) {
 	root := t.TempDir()
 	cmd := startRuntimeCrashChild(t, root)
 
-	if s, err := openRuntimeStore(filepath.Join(root, "run"), posixOnlyProtection); err == nil {
+	if s, err := openRuntimeStore(filepath.Join(root, "run"), openHostDirectory, false); err == nil {
 		closeTestResource(t, s)
 		t.Fatal("second daemon acquired a live store")
 	}
@@ -135,7 +135,7 @@ func TestRuntimeStoreCrashCleanup(t *testing.T) {
 	if err != nil || len(entries) <= 1 {
 		t.Fatalf("expected crash residue: %v", err)
 	}
-	store, err := openRuntimeStore(filepath.Join(root, "run"), posixOnlyProtection)
+	store, err := openRuntimeStore(filepath.Join(root, "run"), openHostDirectory, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestRuntimeStoreCrashCleanup(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("crash residue retained: %v %v", entries, err)
 	}
-	h, err := OpenIn("Machine", filepath.Join(root, "Machine.db"), store.Path)
+	h, err := openIn("Machine", filepath.Join(root, "Machine.db"), store.Path, openHostDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestRuntimeStoreRefusesSymlink(t *testing.T) {
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
-	if s, err := openRuntimeStore(path, posixOnlyProtection); err == nil {
+	if s, err := openRuntimeStore(path, openHostDirectory, false); err == nil {
 		closeTestResource(t, s)
 		t.Fatal("accepted symlink")
 	}
